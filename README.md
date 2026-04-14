@@ -1,5 +1,3 @@
-# Welcome to GitHub Desktop!
+# KNX open Developer Tool
 
-This is your README. READMEs are where you can communicate what your project is and how to use it.
-
-Write your name on line 6, save it, and then head back to GitHub Desktop.
+This is should going to be an opensource alternative to the KNX certified ecosystem. It will be possible to configure Datapoints, physical adresses and everything else on self developed devices. The Stack for Devices will be developed in antoher repo.
