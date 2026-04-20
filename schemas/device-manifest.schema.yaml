@@ -1,0 +1,100 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: "KNX open Developer Tool – Device Manifest"
+description: "Describes a KNX device type for the OpenKNX ecosystem."
+type: object
+required: [id, version, manufacturer, name, hardware, comObjects, memoryLayout]
+properties:
+  id:
+    type: string
+    pattern: "^[a-z0-9-]+$"
+    description: "Unique device identifier (lowercase, hyphens only)"
+  version:
+    type: string
+    pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    description: "Semantic version MAJOR.MINOR.PATCH"
+  manufacturer:
+    type: string
+  name:
+    $ref: "#/$defs/localizedString"
+  hardware:
+    type: object
+    required: [target, transceiver]
+    properties:
+      target:
+        type: string
+        description: "MCU identifier, e.g. STM32G0B1"
+      transceiver:
+        type: string
+        description: "Bus transceiver, e.g. NCN5120"
+  channels:
+    type: array
+    items:
+      type: object
+      required: [id, name]
+      properties:
+        id:   { type: string }
+        name: { $ref: "#/$defs/localizedString" }
+  comObjects:
+    type: array
+    minItems: 1
+    items:
+      type: object
+      required: [id, name, dpt, flags]
+      properties:
+        id:      { type: string }
+        channel: { type: string }
+        name:    { $ref: "#/$defs/localizedString" }
+        dpt:
+          type: string
+          pattern: "^[0-9]+\\.[0-9]+$"
+        flags:
+          type: array
+          items:
+            type: string
+            enum: [C, R, W, T, U]
+  parameters:
+    type: array
+    items:
+      type: object
+      required: [id, name, type]
+      properties:
+        id:   { type: string }
+        name: { $ref: "#/$defs/localizedString" }
+        type:
+          type: string
+          enum: [bool, uint8, uint16, uint32, enum]
+        unit:    { type: string }
+        default: {}
+        range:
+          type: array
+          items: { type: number }
+          minItems: 2
+          maxItems: 2
+        values:
+          type: array
+          items:
+            type: object
+            required: [value, label]
+            properties:
+              value: { type: integer }
+              label: { $ref: "#/$defs/localizedString" }
+        visibilityCondition: { type: string }
+  memoryLayout:
+    type: object
+    required: [baseAddress]
+    properties:
+      baseAddress:
+        oneOf:
+          - type: integer
+          - type: string
+            pattern: "^0x[0-9A-Fa-f]+$"
+
+$defs:
+  localizedString:
+    oneOf:
+      - type: string
+      - type: object
+        required: [de, en]
+        properties:
+          de: { type: string }
+          en: { type: string }

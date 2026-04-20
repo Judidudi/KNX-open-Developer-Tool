@@ -1,0 +1,52 @@
+id: "switch-actuator-1ch"
+version: "1.0.0"
+manufacturer: "OpenKNX"
+name:
+  de: "Schaltaktor 1-fach"
+  en: "Switch Actuator 1-channel"
+hardware:
+  target: "STM32G0B1"
+  transceiver: "NCN5120"
+channels:
+  - id: ch1
+    name:
+      de: "Kanal 1"
+      en: "Channel 1"
+comObjects:
+  - id: co_switch_ch1
+    channel: ch1
+    name:
+      de: "Schalten"
+      en: "Switch"
+    dpt: "1.001"
+    flags: [C, W, T, U]
+parameters:
+  - id: p_startup_delay
+    name:
+      de: "Einschaltverzögerung"
+      en: "Startup delay"
+    type: uint16
+    unit: ms
+    default: 0
+    range: [0, 30000]
+  - id: p_startup_value
+    name:
+      de: "Einschaltwert"
+      en: "Startup value"
+    type: enum
+    default: 0
+    values:
+      - value: 0
+        label: { de: "Aus", en: "Off" }
+      - value: 1
+        label: { de: "Ein", en: "On" }
+      - value: 2
+        label: { de: "Letzter Wert", en: "Last value" }
+  - id: p_invert
+    name:
+      de: "Ausgang invertieren"
+      en: "Invert output"
+    type: bool
+    default: 0
+memoryLayout:
+  baseAddress: "0x4000"
