@@ -1,15 +1,79 @@
 #include "CatalogWidget.h"
+
+#include "CatalogModel.h"
+#include "DeviceCatalog.h"
+#include "Manifest.h"
+
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QListView>
 #include <QLineEdit>
+#include <QPushButton>
+#include <QSortFilterProxyModel>
 
 CatalogWidget::CatalogWidget(QWidget *parent)
     : QWidget(parent)
+    , m_model(new CatalogModel(this))
+    , m_proxy(new QSortFilterProxyModel(this))
+    , m_view(new QListView(this))
+    , m_filterEdit(new QLineEdit(this))
+    , m_addButton(new QPushButton(tr("Zur Topologie hinzufügen"), this))
 {
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(new QLabel(tr("Geräte-Katalog"), this));
-    layout->addWidget(new QLineEdit(this));
-    layout->addWidget(new QListView(this));
+    layout->setSpacing(2);
+
+    auto *header = new QLabel(tr("Geräte-Katalog"), this);
+    header->setStyleSheet(QStringLiteral("font-weight: bold; padding: 4px;"));
+    layout->addWidget(header);
+
+    m_filterEdit->setPlaceholderText(tr("Filter…"));
+    layout->addWidget(m_filterEdit);
+
+    m_proxy->setSourceModel(m_model);
+    m_proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    m_view->setModel(m_proxy);
+    m_view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_view->setUniformItemSizes(false);
+    layout->addWidget(m_view);
+
+    m_addButton->setEnabled(false);
+    layout->addWidget(m_addButton);
+
+    connect(m_filterEdit, &QLineEdit::textChanged, this, &CatalogWidget::onFilterChanged);
+    connect(m_addButton,  &QPushButton::clicked,   this, &CatalogWidget::onAddClicked);
+    connect(m_view,       &QListView::doubleClicked, this, [this](const QModelIndex &){ onActivated(); });
+    connect(m_view->selectionModel(), &QItemSelectionModel::selectionChanged,
+            this, [this](){ m_addButton->setEnabled(selectedManifest() != nullptr); });
+}
+
+void CatalogWidget::setCatalog(DeviceCatalog *catalog)
+{
+    m_catalog = catalog;
+    m_model->setCatalog(catalog);
+}
+
+std::shared_ptr<Manifest> CatalogWidget::selectedManifest() const
+{
+    const QModelIndexList sel = m_view->selectionModel()->selectedIndexes();
+    if (sel.isEmpty())
+        return nullptr;
+    const QModelIndex src = m_proxy->mapToSource(sel.first());
+    return m_model->manifestAt(src);
+}
+
+void CatalogWidget::onFilterChanged(const QString &text)
+{
+    m_proxy->setFilterFixedString(text);
+}
+
+void CatalogWidget::onAddClicked()
+{
+    onActivated();
+}
+
+void CatalogWidget::onActivated()
+{
+    if (auto m = selectedManifest())
+        emit addDeviceRequested(m);
 }

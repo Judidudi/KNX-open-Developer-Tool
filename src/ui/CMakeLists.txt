@@ -3,8 +3,12 @@ add_library(knxodt_ui STATIC
     MainWindow.cpp
     ProjectTreeWidget.h
     ProjectTreeWidget.cpp
+    ProjectTreeModel.h
+    ProjectTreeModel.cpp
     CatalogWidget.h
     CatalogWidget.cpp
+    CatalogModel.h
+    CatalogModel.cpp
     DeviceEditorWidget.h
     DeviceEditorWidget.cpp
     BusMonitorWidget.h

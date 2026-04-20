@@ -6,8 +6,13 @@
 #include "BusMonitorWidget.h"
 #include "dialogs/NewProjectDialog.h"
 #include "dialogs/ConnectDialog.h"
+#include "dialogs/GroupAddressDialog.h"
 
 #include "Project.h"
+#include "TopologyNode.h"
+#include "DeviceInstance.h"
+#include "DeviceCatalog.h"
+#include "Manifest.h"
 #include "ProjectXmlSerializer.h"
 
 #include <QMenuBar>
@@ -21,26 +26,56 @@
 #include <QMessageBox>
 #include <QCloseEvent>
 #include <QApplication>
+#include <QStandardPaths>
+#include <QDir>
+#include <QCoreApplication>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     m_project = std::make_unique<Project>();
+    m_catalog = std::make_unique<DeviceCatalog>();
 
     setupCentralWidget();
     setupMenuBar();
     setupToolBar();
     setupStatusBar();
-    updateWindowTitle();
 
+    loadCatalog();
+
+    m_projectTree->setProject(m_project.get());
+    m_catalogView->setCatalog(m_catalog.get());
+
+    updateWindowTitle();
     resize(1200, 750);
 }
 
 MainWindow::~MainWindow() = default;
 
+void MainWindow::loadCatalog()
+{
+    // Priority 1: env override (useful for CI / tests)
+    QString envPath = qEnvironmentVariable("KNXODT_CATALOG_PATH");
+    if (!envPath.isEmpty())
+        m_catalog->addSearchPath(envPath);
+
+    // Priority 2: catalog/devices next to the executable (dev builds)
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    m_catalog->addSearchPath(appDir.absoluteFilePath(QStringLiteral("catalog/devices")));
+    m_catalog->addSearchPath(appDir.absoluteFilePath(QStringLiteral("../catalog/devices")));
+    m_catalog->addSearchPath(appDir.absoluteFilePath(QStringLiteral("../../catalog/devices")));
+
+    // Priority 3: per-user catalog
+    const QString userPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
+                             + QStringLiteral("/catalog/devices");
+    QDir().mkpath(userPath);
+    m_catalog->addSearchPath(userPath);
+
+    m_catalog->reload();
+}
+
 void MainWindow::setupMenuBar()
 {
-    // --- Datei ---
     QMenu *fileMenu = menuBar()->addMenu(tr("&Datei"));
 
     QAction *actNew = fileMenu->addAction(tr("&Neu…"), this, &MainWindow::newProject);
@@ -53,40 +88,29 @@ void MainWindow::setupMenuBar()
 
     m_actSave = fileMenu->addAction(tr("&Speichern"), this, &MainWindow::saveProject);
     m_actSave->setShortcut(QKeySequence::Save);
-    m_actSave->setEnabled(false);
 
     m_actSaveAs = fileMenu->addAction(tr("Speichern &unter…"), this, &MainWindow::saveProjectAs);
     m_actSaveAs->setShortcut(QKeySequence::SaveAs);
-    m_actSaveAs->setEnabled(false);
 
     fileMenu->addSeparator();
     fileMenu->addAction(tr("&Beenden"), qApp, &QApplication::quit, QKeySequence::Quit);
 
-    // --- Projekt ---
     QMenu *projectMenu = menuBar()->addMenu(tr("&Projekt"));
-    projectMenu->addAction(tr("Gerät hinzufügen"), this, [this](){
-        // Placeholder – wird in Phase 2 implementiert
-    });
+    m_actAddGroupAddr = projectMenu->addAction(tr("Gruppenadresse hinzufügen…"), this, &MainWindow::addGroupAddress);
 
-    // --- Bus ---
     QMenu *busMenu = menuBar()->addMenu(tr("&Bus"));
-
     m_actConnect = busMenu->addAction(tr("Verbinden…"), this, [this](){
         ConnectDialog dlg(this);
         dlg.exec();
     });
-
     m_actBusMonitor = busMenu->addAction(tr("Busmonitor"), this, [this](){
         m_centerStack->setCurrentWidget(m_busMonitor);
     });
-
     busMenu->addSeparator();
-
-    m_actProgram = busMenu->addAction(tr("Gerät programmieren…"), this, [this](){
-        // Placeholder – wird in Phase 4 implementiert
+    m_actProgram = busMenu->addAction(tr("Gerät programmieren…"), this, [](){
+        // Phase 4 placeholder
     });
 
-    // --- Hilfe ---
     QMenu *helpMenu = menuBar()->addMenu(tr("&Hilfe"));
     helpMenu->addAction(tr("Über KNX open Developer Tool…"), this, [this](){
         QMessageBox::about(this,
@@ -103,9 +127,11 @@ void MainWindow::setupToolBar()
     tb->setObjectName(QStringLiteral("mainToolBar"));
     tb->setMovable(false);
 
-    tb->addAction(tr("Neu"), this, &MainWindow::newProject);
-    tb->addAction(tr("Öffnen"), this, &MainWindow::openProject);
+    tb->addAction(tr("Neu"),       this, &MainWindow::newProject);
+    tb->addAction(tr("Öffnen"),    this, &MainWindow::openProject);
     tb->addAction(tr("Speichern"), this, &MainWindow::saveProject);
+    tb->addSeparator();
+    tb->addAction(m_actAddGroupAddr);
     tb->addSeparator();
     tb->addAction(m_actConnect);
     tb->addAction(m_actProgram);
@@ -113,31 +139,34 @@ void MainWindow::setupToolBar()
 
 void MainWindow::setupCentralWidget()
 {
-    // Left pane
-    m_projectTree = new ProjectTreeWidget(this);
-
-    // Center stack
-    m_centerStack = new QStackedWidget(this);
+    m_projectTree  = new ProjectTreeWidget(this);
     m_deviceEditor = new DeviceEditorWidget(this);
     m_busMonitor   = new BusMonitorWidget(this);
+    m_catalogView  = new CatalogWidget(this);
+
+    m_centerStack = new QStackedWidget(this);
     m_centerStack->addWidget(m_deviceEditor);
     m_centerStack->addWidget(m_busMonitor);
     m_centerStack->setCurrentWidget(m_deviceEditor);
 
-    // Right pane
-    m_catalog = new CatalogWidget(this);
-
-    // Horizontal splitter
-    QSplitter *splitter = new QSplitter(Qt::Horizontal, this);
+    auto *splitter = new QSplitter(Qt::Horizontal, this);
     splitter->addWidget(m_projectTree);
     splitter->addWidget(m_centerStack);
-    splitter->addWidget(m_catalog);
+    splitter->addWidget(m_catalogView);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 3);
     splitter->setStretchFactor(2, 1);
-    splitter->setSizes({240, 720, 240});
-
+    splitter->setSizes({260, 680, 260});
     setCentralWidget(splitter);
+
+    connect(m_projectTree, &ProjectTreeWidget::deviceSelected,
+            this,          &MainWindow::onDeviceSelected);
+    connect(m_projectTree, &ProjectTreeWidget::selectionCleared,
+            this, [this](){ m_deviceEditor->clearDevice(); });
+    connect(m_catalogView, &CatalogWidget::addDeviceRequested,
+            this,          &MainWindow::onAddDeviceRequested);
+    connect(m_deviceEditor, &DeviceEditorWidget::deviceModified,
+            this, [this](){ markModified(); });
 }
 
 void MainWindow::setupStatusBar()
@@ -157,6 +186,12 @@ void MainWindow::updateWindowTitle()
     setWindowTitle(title);
 }
 
+void MainWindow::markModified()
+{
+    m_modified = true;
+    updateWindowTitle();
+}
+
 void MainWindow::newProject()
 {
     if (!maybeSave())
@@ -168,12 +203,18 @@ void MainWindow::newProject()
 
     m_project = std::make_unique<Project>();
     m_project->setName(dlg.projectName());
+
+    // Seed one Area + one Line so users can immediately drop devices
+    auto area = std::make_unique<TopologyNode>(TopologyNode::Type::Area, 1, tr("Bereich 1"));
+    auto line = std::make_unique<TopologyNode>(TopologyNode::Type::Line, 1, tr("Linie 1"));
+    area->addChild(std::move(line));
+    m_project->addArea(std::move(area));
+
     m_currentFilePath.clear();
     m_modified = false;
 
     m_projectTree->setProject(m_project.get());
-    m_actSave->setEnabled(true);
-    m_actSaveAs->setEnabled(true);
+    m_deviceEditor->clearDevice();
     updateWindowTitle();
     statusBar()->showMessage(tr("Neues Projekt angelegt"));
 }
@@ -186,7 +227,6 @@ void MainWindow::openProject()
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Projekt öffnen"), QString(),
         tr("KNX open Developer Tool Projekte (*.kodtproj);;Alle Dateien (*)"));
-
     if (path.isEmpty())
         return;
 
@@ -202,8 +242,7 @@ void MainWindow::openProject()
     m_modified = false;
 
     m_projectTree->setProject(m_project.get());
-    m_actSave->setEnabled(true);
-    m_actSaveAs->setEnabled(true);
+    m_deviceEditor->clearDevice();
     updateWindowTitle();
     statusBar()->showMessage(tr("Projekt geladen: %1").arg(path));
 }
@@ -229,12 +268,82 @@ void MainWindow::saveProjectAs()
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Projekt speichern unter"), QString(),
         tr("KNX open Developer Tool Projekte (*.kodtproj);;Alle Dateien (*)"));
-
     if (path.isEmpty())
         return;
-
     m_currentFilePath = path;
     saveProject();
+}
+
+void MainWindow::addGroupAddress()
+{
+    GroupAddressDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    GroupAddress ga(dlg.mainGroup(), dlg.middleGroup(), dlg.subGroup(),
+                    dlg.name(), dlg.dpt());
+    if (m_project->findGroupAddress(ga.toString())) {
+        QMessageBox::warning(this, tr("Gruppenadresse existiert bereits"),
+            tr("Die Adresse %1 ist im Projekt bereits vorhanden.").arg(ga.toString()));
+        return;
+    }
+    m_project->addGroupAddress(ga);
+    m_projectTree->refresh();
+    markModified();
+}
+
+void MainWindow::onAddDeviceRequested(std::shared_ptr<Manifest> manifest)
+{
+    if (!manifest)
+        return;
+
+    // Place the new device on the first line of the first area – create one if missing
+    if (m_project->areaCount() == 0)
+        m_project->addArea(std::make_unique<TopologyNode>(TopologyNode::Type::Area, 1, tr("Bereich 1")));
+    TopologyNode *area = m_project->areaAt(0);
+    if (area->childCount() == 0)
+        area->addChild(std::make_unique<TopologyNode>(TopologyNode::Type::Line, 1, tr("Linie 1")));
+    TopologyNode *line = area->childAt(0);
+
+    // Auto-assign next free physical address on this line
+    const int nextMember = line->deviceCount() + 1;
+    const QString physAddr = QStringLiteral("%1.%2.%3").arg(area->id()).arg(line->id()).arg(nextMember);
+
+    const QString instanceId = QStringLiteral("d%1").arg(nextMember);
+    auto dev = std::make_unique<DeviceInstance>(instanceId, manifest->id, manifest->version);
+    dev->setPhysicalAddress(physAddr);
+    dev->setManifest(manifest);
+
+    // Fill default parameter values from manifest
+    for (const ManifestParameter &p : manifest->parameters)
+        dev->parameters()[p.id] = p.defaultValue;
+
+    // Pre-create empty ComObject links
+    for (const ManifestComObject &co : manifest->comObjects) {
+        ComObjectLink link;
+        link.comObjectId = co.id;
+        dev->addLink(link);
+    }
+
+    line->addDevice(std::move(dev));
+    m_projectTree->refresh();
+    markModified();
+    statusBar()->showMessage(tr("Gerät hinzugefügt: %1 (%2)").arg(manifest->name.get(), physAddr));
+}
+
+void MainWindow::onDeviceSelected(DeviceInstance *device)
+{
+    if (!device) {
+        m_deviceEditor->clearDevice();
+        return;
+    }
+
+    // Resolve manifest lazily if not already set
+    if (!device->manifest())
+        device->setManifest(m_catalog->sharedById(device->catalogRef()));
+
+    m_deviceEditor->setDevice(device, m_project.get());
+    m_centerStack->setCurrentWidget(m_deviceEditor);
 }
 
 bool MainWindow::maybeSave()
@@ -249,7 +358,7 @@ bool MainWindow::maybeSave()
 
     if (btn == QMessageBox::Save) {
         saveProject();
-        return true;
+        return !m_modified;  // still modified if save was cancelled
     }
     return btn != QMessageBox::Cancel;
 }
