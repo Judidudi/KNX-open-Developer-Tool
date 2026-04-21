@@ -80,8 +80,9 @@ struct UsbKnxInterface::Priv
     UsbKnxInterface *q;
     Transport    transport;
     QString      devicePath;
-    bool         connected  = false;
-    uint8_t      hidEmiType = HID_PROTO_CEMI; // negotiated at connect time
+    bool         connected          = false;
+    uint8_t      hidEmiType         = HID_PROTO_EMI2; // updated by negotiation or auto-detect
+    bool         hidNumberedReports = true;            // true = report ID byte present
     QByteArray   recvBuf;
 
 #ifndef KNXODT_NO_SERIAL
@@ -177,11 +178,14 @@ struct UsbKnxInterface::Priv
         // Falls back to cEMI if the device does not respond to management frames
         // (some devices work without explicit negotiation).
         if (!negotiateHidProtocol()) {
+            // Many older devices (e.g. Hager, Siemens) don't implement the
+            // Device Feature management protocol but work fine with EMI2.
+            // We keep hidEmiType = HID_PROTO_EMI2 and auto-detect the actual
+            // protocol from the first received frame.
             emit q->errorOccurred(
                 QObject::tr("USB-HID %1: Protokollaushandlung fehlgeschlagen – "
-                            "cEMI wird als Fallback verwendet.").arg(devicePath));
-            hidEmiType = HID_PROTO_CEMI;
-            // Do NOT close – attempt to use the device anyway
+                            "EMI2 wird als Fallback verwendet, "
+                            "Protokoll wird automatisch erkannt.").arg(devicePath));
         }
 
         hidNotifier = new QSocketNotifier(hidFd, QSocketNotifier::Read, q);
@@ -271,18 +275,40 @@ struct UsbKnxInterface::Priv
     {
         uint8_t report[HID_REPORT_SIZE] = {};
         const ssize_t n = ::read(hidFd, report, HID_REPORT_SIZE);
-        if (n < 3) return;
-        if (report[0] != HID_REPORT_ID) return;
+        if (n < 2) return;
 
-        const uint8_t protoType = report[1] & 0x0F;
-        const int dataLen       = report[2];
-        if (n < 3 + dataLen) return;
+        // KNX USB HID spec 07_01_01 defines numbered reports (ID = 0x01).
+        // Some devices (Hager, older Siemens) use unnumbered reports where
+        // the report ID byte is absent from the hidraw stream.
+        // Detect format once from the first received frame and remember it.
+        if (report[0] == HID_REPORT_ID && n >= 3) {
+            hidNumberedReports = true;
+        } else if (report[0] != HID_REPORT_ID) {
+            hidNumberedReports = false;
+        }
 
-        if (protoType == HID_PROTO_MGMT) return; // management response, ignore
+        // Locate Packet Info and data length based on format:
+        //   Numbered:   [0x01][PacketInfo][DataLen][Data...]
+        //   Unnumbered: [PacketInfo][DataLen][Data...]
+        const int     infoOffset = hidNumberedReports ? 1 : 0;
+        const int     dataOffset = infoOffset + 2;
+        if (n < dataOffset) return;
 
-        const QByteArray frame(reinterpret_cast<const char *>(report + 3), dataLen);
+        const uint8_t packetInfo = report[infoOffset];
+        const uint8_t protoType  = packetInfo & 0x0F;
+        const int     dataLen    = static_cast<uint8_t>(report[infoOffset + 1]);
+
+        if (n < dataOffset + dataLen || dataLen <= 0) return;
+        if (protoType == HID_PROTO_MGMT) return;
+
+        // Auto-update the EMI type so sendHid() uses the correct format
+        if (protoType == HID_PROTO_EMI2 || protoType == HID_PROTO_CEMI)
+            hidEmiType = protoType;
+
+        const QByteArray frame(reinterpret_cast<const char *>(report + dataOffset), dataLen);
         const QByteArray cemi = (protoType == HID_PROTO_EMI2) ? emi2ToCemi(frame) : frame;
-        emit q->cemiFrameReceived(cemi);
+        if (!cemi.isEmpty())
+            emit q->cemiFrameReceived(cemi);
     }
 #endif
 
@@ -310,11 +336,15 @@ struct UsbKnxInterface::Priv
                                    ? cemiToEmi2(cemi) : cemi;
 
         uint8_t report[HID_REPORT_SIZE] = {};
-        report[0] = HID_REPORT_ID;
-        report[1] = hidEmiType;
-        const int len = std::min<int>(static_cast<int>(payload.size()), HID_REPORT_SIZE - 3);
-        report[2] = static_cast<uint8_t>(len);
-        std::memcpy(report + 3, payload.constData(), static_cast<size_t>(len));
+        // Use the same report format (numbered/unnumbered) as the device sends
+        const int infoOffset = hidNumberedReports ? 1 : 0;
+        if (hidNumberedReports)
+            report[0] = HID_REPORT_ID;
+        report[infoOffset]     = hidEmiType;
+        const int maxPayload   = HID_REPORT_SIZE - infoOffset - 2;
+        const int len          = std::min<int>(static_cast<int>(payload.size()), maxPayload);
+        report[infoOffset + 1] = static_cast<uint8_t>(len);
+        std::memcpy(report + infoOffset + 2, payload.constData(), static_cast<size_t>(len));
         ::write(hidFd, report, HID_REPORT_SIZE);
 #else
         Q_UNUSED(cemi)
