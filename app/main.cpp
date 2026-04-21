@@ -2,6 +2,7 @@
 #include <QTranslator>
 #include <QLocale>
 #include <QLibraryInfo>
+#include <QIcon>
 
 #include "MainWindow.h"
 
@@ -11,15 +12,16 @@ int main(int argc, char *argv[])
     app.setApplicationName(QStringLiteral("KNX open Developer Tool"));
     app.setApplicationVersion(QStringLiteral("0.1.0"));
     app.setOrganizationName(QStringLiteral("OpenKNX"));
+    app.setWindowIcon(QIcon(QStringLiteral(":/icons/knxodt.svg")));
 
-    // Qt built-in translations (buttons, dialogs)
+    // Qt built-in translations (buttons, standard dialogs)
     QTranslator qtTranslator;
     if (qtTranslator.load(QLocale(), QStringLiteral("qt"), QStringLiteral("_"),
                           QLibraryInfo::path(QLibraryInfo::TranslationsPath))) {
         app.installTranslator(&qtTranslator);
     }
 
-    // Application translations
+    // Application translations (embedded in :/translations/)
     QTranslator appTranslator;
     if (appTranslator.load(QLocale(), QStringLiteral("app"), QStringLiteral("_"),
                            QStringLiteral(":/translations"))) {

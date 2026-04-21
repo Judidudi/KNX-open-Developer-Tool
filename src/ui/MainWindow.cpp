@@ -17,8 +17,9 @@
 #include "ProjectXmlSerializer.h"
 
 #include "InterfaceManager.h"
-#include "KnxIpTunnelingClient.h"
+#include "IKnxInterface.h"
 #include "DeviceProgrammer.h"
+#include "ConnectInterfaceFactory.h"
 
 #include <QMenuBar>
 #include <QToolBar>
@@ -373,12 +374,21 @@ void MainWindow::onConnectClicked()
     if (dlg.exec() != QDialog::Accepted)
         return;
 
-    auto client = std::make_unique<KnxIpTunnelingClient>();
-    client->setRemote(dlg.selectedHost(), dlg.selectedPort());
-    m_interfaces->setInterface(std::move(client));
+    std::unique_ptr<IKnxInterface> iface;
+    QString statusMsg;
+
+    if (dlg.connectionType() == ConnectDialog::ConnectionType::Usb) {
+        iface     = ConnectInterfaceFactory::createUsb(dlg.usbTransport(), dlg.usbDevicePath());
+        statusMsg = tr("Verbindungsaufbau zu %1…").arg(dlg.usbDevicePath());
+    } else {
+        iface     = ConnectInterfaceFactory::createKnxIp(dlg.selectedHost(), dlg.selectedPort());
+        statusMsg = tr("Verbindungsaufbau zu %1…").arg(dlg.selectedHost().toString());
+    }
+
+    m_interfaces->setInterface(std::move(iface));
     if (m_interfaces->activeInterface())
         m_interfaces->activeInterface()->connectToInterface();
-    statusBar()->showMessage(tr("Verbindungsaufbau zu %1…").arg(dlg.selectedHost().toString()));
+    statusBar()->showMessage(statusMsg);
 }
 
 void MainWindow::onDisconnectClicked()
