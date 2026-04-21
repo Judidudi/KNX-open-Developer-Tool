@@ -39,9 +39,13 @@ properties:
     minItems: 1
     items:
       type: object
-      required: [id, name, dpt, flags]
+      required: [id, number, name, dpt, flags]
       properties:
         id:      { type: string }
+        number:
+          type: integer
+          minimum: 0
+          description: "Fixed index used in the association table"
         channel: { type: string }
         name:    { $ref: "#/$defs/localizedString" }
         dpt:
@@ -56,7 +60,7 @@ properties:
     type: array
     items:
       type: object
-      required: [id, name, type]
+      required: [id, name, type, memoryOffset]
       properties:
         id:   { type: string }
         name: { $ref: "#/$defs/localizedString" }
@@ -65,6 +69,14 @@ properties:
           enum: [bool, uint8, uint16, uint32, enum]
         unit:    { type: string }
         default: {}
+        memoryOffset:
+          type: integer
+          minimum: 0
+          description: "Byte offset from memoryLayout.parameterBase"
+        size:
+          type: integer
+          minimum: 1
+          description: "Size in bytes. Default: bool/uint8/enum=1, uint16=2, uint32=4"
         range:
           type: array
           items: { type: number }
@@ -81,13 +93,24 @@ properties:
         visibilityCondition: { type: string }
   memoryLayout:
     type: object
-    required: [baseAddress]
+    required: [parameterBase]
     properties:
-      baseAddress:
-        oneOf:
-          - type: integer
-          - type: string
-            pattern: "^0x[0-9A-Fa-f]+$"
+      addressTable:
+        $ref: "#/$defs/address"
+        description: "Start of the address table (device PA + used GAs)"
+      associationTable:
+        $ref: "#/$defs/address"
+        description: "Start of the association table (ComObject index → GA index)"
+      comObjectTable:
+        $ref: "#/$defs/address"
+        description: "Start of the ComObject descriptor table"
+      parameterBase:
+        $ref: "#/$defs/address"
+        description: "Start of the parameter value block"
+      parameterSize:
+        type: integer
+        minimum: 1
+        description: "Total size of the parameter block in bytes"
 
 $defs:
   localizedString:
@@ -98,3 +121,8 @@ $defs:
         properties:
           de: { type: string }
           en: { type: string }
+  address:
+    oneOf:
+      - type: integer
+      - type: string
+        pattern: "^0x[0-9A-Fa-f]+$"

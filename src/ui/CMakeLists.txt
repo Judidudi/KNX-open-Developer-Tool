@@ -13,6 +13,8 @@ add_library(knxodt_ui STATIC
     DeviceEditorWidget.cpp
     BusMonitorWidget.h
     BusMonitorWidget.cpp
+    BusMonitorModel.h
+    BusMonitorModel.cpp
     ProgramDialog.h
     ProgramDialog.cpp
     dialogs/NewProjectDialog.h
@@ -24,4 +26,4 @@ add_library(knxodt_ui STATIC
 )
 
 target_include_directories(knxodt_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(knxodt_ui PUBLIC Qt6::Core Qt6::Widgets knxodt_core knxodt_knxip knxodt_usb)
+target_link_libraries(knxodt_ui PUBLIC Qt6::Core Qt6::Widgets Qt6::Network knxodt_core knxodt_knxip knxodt_usb)

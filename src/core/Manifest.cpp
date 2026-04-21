@@ -19,7 +19,31 @@ ManifestLocalizedString parseLocalizedString(const YAML::Node &node)
     return s;
 }
 
+// Reads a memory address which may be written as an integer or as a hex
+// string like "0x4000".
+bool parseAddress(const YAML::Node &node, uint32_t &out)
+{
+    if (!node)
+        return false;
+    if (node.IsScalar()) {
+        const std::string s = node.as<std::string>();
+        bool ok = false;
+        const uint32_t v = QString::fromStdString(s).toUInt(&ok, 0);
+        if (ok) { out = v; return true; }
+    }
+    return false;
+}
+
 } // namespace
+
+uint32_t ManifestParameter::effectiveSize() const
+{
+    if (size > 0)
+        return size;
+    if (type == QLatin1String("uint16")) return 2;
+    if (type == QLatin1String("uint32")) return 4;
+    return 1;  // bool, uint8, enum
+}
 
 std::optional<Manifest> loadManifest(const QString &filePath)
 {
@@ -56,9 +80,12 @@ std::optional<Manifest> loadManifest(const QString &filePath)
     }
 
     if (root["comObjects"] && root["comObjects"].IsSequence()) {
+        int autoNumber = 0;
         for (const auto &co : root["comObjects"]) {
             ManifestComObject obj;
             if (co["id"])      obj.id      = QString::fromStdString(co["id"].as<std::string>());
+            if (co["number"])  obj.number  = co["number"].as<int>();
+            else               obj.number  = autoNumber;
             if (co["channel"]) obj.channel = QString::fromStdString(co["channel"].as<std::string>());
             if (co["name"])    obj.name    = parseLocalizedString(co["name"]);
             if (co["dpt"])     obj.dpt     = QString::fromStdString(co["dpt"].as<std::string>());
@@ -67,10 +94,12 @@ std::optional<Manifest> loadManifest(const QString &filePath)
                     obj.flags.append(QString::fromStdString(flag.as<std::string>()));
             }
             m.comObjects.append(obj);
+            ++autoNumber;
         }
     }
 
     if (root["parameters"] && root["parameters"].IsSequence()) {
+        uint32_t autoOffset = 0;
         for (const auto &p : root["parameters"]) {
             ManifestParameter param;
             if (p["id"])   param.id   = QString::fromStdString(p["id"].as<std::string>());
@@ -101,15 +130,33 @@ std::optional<Manifest> loadManifest(const QString &filePath)
             }
             if (p["visibilityCondition"])
                 param.visibilityCondition = QString::fromStdString(p["visibilityCondition"].as<std::string>());
+            if (p["size"])         param.size = p["size"].as<uint32_t>();
+            if (p["memoryOffset"]) param.memoryOffset = p["memoryOffset"].as<uint32_t>();
+            else                   param.memoryOffset = autoOffset;
+            autoOffset = param.memoryOffset + param.effectiveSize();
             m.parameters.append(param);
         }
     }
 
-    if (root["memoryLayout"] && root["memoryLayout"]["baseAddress"]) {
-        std::string addrStr = root["memoryLayout"]["baseAddress"].as<std::string>();
-        bool ok;
-        uint32_t addr = QString::fromStdString(addrStr).toUInt(&ok, 0);
-        if (ok) m.memoryLayout.baseAddress = addr;
+    if (root["memoryLayout"]) {
+        const auto &ml = root["memoryLayout"];
+        uint32_t v = 0;
+        if (parseAddress(ml["addressTable"],     v)) m.memoryLayout.addressTable     = v;
+        if (parseAddress(ml["associationTable"], v)) m.memoryLayout.associationTable = v;
+        if (parseAddress(ml["comObjectTable"],   v)) m.memoryLayout.comObjectTable   = v;
+        if (parseAddress(ml["parameterBase"],    v)) m.memoryLayout.parameterBase    = v;
+        // Backwards-compat: legacy "baseAddress" maps to parameterBase
+        if (parseAddress(ml["baseAddress"],      v)) m.memoryLayout.parameterBase    = v;
+        if (ml["parameterSize"])
+            m.memoryLayout.parameterSize = ml["parameterSize"].as<uint32_t>();
+    }
+
+    // Auto-compute parameterSize if not specified: last offset + size
+    if (m.memoryLayout.parameterSize == 0 && !m.parameters.isEmpty()) {
+        uint32_t end = 0;
+        for (const auto &p : m.parameters)
+            end = std::max(end, p.memoryOffset + p.effectiveSize());
+        m.memoryLayout.parameterSize = end;
     }
 
     if (!m.isValid())

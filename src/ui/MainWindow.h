@@ -8,6 +8,7 @@ class DeviceCatalog;
 class DeviceInstance;
 struct Manifest;
 
+class InterfaceManager;
 class ProjectTreeWidget;
 class CatalogWidget;
 class DeviceEditorWidget;
@@ -36,6 +37,13 @@ private slots:
     void addGroupAddress();
     void onAddDeviceRequested(std::shared_ptr<Manifest> manifest);
     void onDeviceSelected(DeviceInstance *device);
+    void onConnectClicked();
+    void onDisconnectClicked();
+    void onProgramClicked();
+    void onShowBusMonitor();
+    void onInterfaceConnected();
+    void onInterfaceDisconnected();
+    void onInterfaceError(const QString &message);
 
 private:
     void setupMenuBar();
@@ -46,9 +54,11 @@ private:
     void updateWindowTitle();
     void markModified();
     bool maybeSave();
+    void updateConnectionUi();
 
-    std::unique_ptr<Project>       m_project;
-    std::unique_ptr<DeviceCatalog> m_catalog;
+    std::unique_ptr<Project>          m_project;
+    std::unique_ptr<DeviceCatalog>    m_catalog;
+    std::unique_ptr<InterfaceManager> m_interfaces;
 
     ProjectTreeWidget  *m_projectTree  = nullptr;
     CatalogWidget      *m_catalogView  = nullptr;
@@ -60,9 +70,12 @@ private:
     QString  m_currentFilePath;
     bool     m_modified = false;
 
+    DeviceInstance *m_selectedDevice = nullptr;
+
     QAction *m_actSave          = nullptr;
     QAction *m_actSaveAs        = nullptr;
     QAction *m_actConnect       = nullptr;
+    QAction *m_actDisconnect    = nullptr;
     QAction *m_actProgram       = nullptr;
     QAction *m_actBusMonitor    = nullptr;
     QAction *m_actAddGroupAddr  = nullptr;

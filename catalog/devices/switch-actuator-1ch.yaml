@@ -14,12 +14,21 @@ channels:
       en: "Channel 1"
 comObjects:
   - id: co_switch_ch1
+    number: 0
     channel: ch1
     name:
       de: "Schalten"
       en: "Switch"
     dpt: "1.001"
     flags: [C, W, T, U]
+  - id: co_status_ch1
+    number: 1
+    channel: ch1
+    name:
+      de: "Statusrückmeldung"
+      en: "Status feedback"
+    dpt: "1.001"
+    flags: [C, R, T]
 parameters:
   - id: p_startup_delay
     name:
@@ -29,12 +38,16 @@ parameters:
     unit: ms
     default: 0
     range: [0, 30000]
+    memoryOffset: 0
+    size: 2
   - id: p_startup_value
     name:
       de: "Einschaltwert"
       en: "Startup value"
     type: enum
     default: 0
+    memoryOffset: 2
+    size: 1
     values:
       - value: 0
         label: { de: "Aus", en: "Off" }
@@ -48,5 +61,11 @@ parameters:
       en: "Invert output"
     type: bool
     default: 0
+    memoryOffset: 3
+    size: 1
 memoryLayout:
-  baseAddress: "0x4000"
+  addressTable:     "0x4000"
+  associationTable: "0x4100"
+  comObjectTable:   "0x4200"
+  parameterBase:    "0x4400"
+  parameterSize:    4
