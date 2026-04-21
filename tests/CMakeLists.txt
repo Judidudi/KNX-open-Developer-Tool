@@ -19,3 +19,8 @@ add_test(NAME test_manifest_parser COMMAND test_manifest_parser)
 qt_add_executable(test_cemi_frame test_cemi_frame.cpp)
 target_link_libraries(test_cemi_frame PRIVATE Qt6::Test knxodt_core knxodt_knxip)
 add_test(NAME test_cemi_frame COMMAND test_cemi_frame)
+
+# TableBuilder lives in knxodt_knxip and depends on both libs
+qt_add_executable(test_table_builder test_table_builder.cpp)
+target_link_libraries(test_table_builder PRIVATE Qt6::Test knxodt_core knxodt_knxip)
+add_test(NAME test_table_builder COMMAND test_table_builder)

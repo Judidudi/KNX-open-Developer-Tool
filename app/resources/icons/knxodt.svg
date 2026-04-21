@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Background circle -->
+  <circle cx="32" cy="32" r="30" fill="#1a3a5c" stroke="#2980b9" stroke-width="2"/>
+  <!-- KNX bus topology: central node connected to 4 devices -->
+  <!-- Central hub -->
+  <circle cx="32" cy="32" r="6" fill="#2980b9"/>
+  <!-- Bus line (horizontal) -->
+  <line x1="8" y1="32" x2="56" y2="32" stroke="#4aaee8" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- Device nodes on bus -->
+  <circle cx="14" cy="32" r="4" fill="#4aaee8"/>
+  <circle cx="26" cy="32" r="4" fill="#4aaee8"/>
+  <circle cx="38" cy="32" r="4" fill="#4aaee8"/>
+  <circle cx="50" cy="32" r="4" fill="#4aaee8"/>
+  <!-- Drop lines (devices connecting down from bus) -->
+  <line x1="14" y1="36" x2="14" y2="48" stroke="#4aaee8" stroke-width="2" stroke-linecap="round"/>
+  <line x1="26" y1="36" x2="26" y2="48" stroke="#4aaee8" stroke-width="2" stroke-linecap="round"/>
+  <line x1="38" y1="36" x2="38" y2="48" stroke="#4aaee8" stroke-width="2" stroke-linecap="round"/>
+  <line x1="50" y1="36" x2="50" y2="48" stroke="#4aaee8" stroke-width="2" stroke-linecap="round"/>
+  <!-- Device rectangles -->
+  <rect x="10" y="48" width="8" height="6" rx="1" fill="#2980b9"/>
+  <rect x="22" y="48" width="8" height="6" rx="1" fill="#2980b9"/>
+  <rect x="34" y="48" width="8" height="6" rx="1" fill="#2980b9"/>
+  <rect x="46" y="48" width="8" height="6" rx="1" fill="#2980b9"/>
+  <!-- "K" letter watermark on hub -->
+  <text x="32" y="36" text-anchor="middle" font-family="sans-serif" font-weight="bold"
+        font-size="8" fill="white">K</text>
+</svg>

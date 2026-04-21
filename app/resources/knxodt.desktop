@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=KNX open Developer Tool
+GenericName=KNX Configuration Tool
+Comment=Open-source tool to configure and program KNX devices
+Comment[de]=Open-Source-Werkzeug zur Konfiguration und Programmierung von KNX-Geräten
+Exec=KNXOpenDeveloperTool %F
+Icon=knxodt
+Terminal=false
+Categories=Development;Engineering;
+MimeType=application/x-kodtproj;
+Keywords=KNX;BMS;Building;Automation;
+StartupWMClass=KNXOpenDeveloperTool

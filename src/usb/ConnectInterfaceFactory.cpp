@@ -1,7 +1,5 @@
 #include "ConnectInterfaceFactory.h"
-#include "UsbKnxInterface.h"
 #include "KnxIpTunnelingClient.h"
-
 #include <QHostAddress>
 
 std::unique_ptr<IKnxInterface> ConnectInterfaceFactory::createKnxIp(
@@ -12,7 +10,8 @@ std::unique_ptr<IKnxInterface> ConnectInterfaceFactory::createKnxIp(
     return client;
 }
 
-std::unique_ptr<IKnxInterface> ConnectInterfaceFactory::createUsb()
+std::unique_ptr<IKnxInterface> ConnectInterfaceFactory::createUsb(
+    UsbKnxInterface::Transport transport, const QString &devicePath)
 {
-    return std::make_unique<UsbKnxInterface>();
+    return std::make_unique<UsbKnxInterface>(transport, devicePath);
 }

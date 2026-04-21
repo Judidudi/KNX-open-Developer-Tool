@@ -20,14 +20,48 @@ jobs:
           sudo apt-get install -y \
             cmake ninja-build g++ \
             qt6-base-dev qt6-tools-dev qt6-tools-dev-tools \
+            qt6-l10n-tools \
             libqt6serialport6-dev \
-            libgl1-mesa-dev
+            libgl1-mesa-dev \
+            libfuse2
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 
       - name: Build
         run: cmake --build build --parallel
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      - name: Install into AppDir
+        run: |
+          DESTDIR=${{ github.workspace }}/AppDir cmake --install build
+
+      - name: Download linuxdeploy
+        run: |
+          curl -Lo linuxdeploy.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -Lo linuxdeploy-plugin-qt.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy.AppImage linuxdeploy-plugin-qt.AppImage
+
+      - name: Create AppImage
+        env:
+          QMAKE: /usr/bin/qmake6
+          OUTPUT: KNXOpenDeveloperTool-x86_64.AppImage
+        run: |
+          ./linuxdeploy.AppImage \
+            --appdir ${{ github.workspace }}/AppDir \
+            --executable AppDir/usr/bin/KNXOpenDeveloperTool \
+            --desktop-file AppDir/usr/share/applications/knxodt.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/knxodt.svg \
+            --plugin qt \
+            --output appimage
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: KNXOpenDeveloperTool-linux-x86_64
+          path: KNXOpenDeveloperTool-x86_64.AppImage
+          retention-days: 30

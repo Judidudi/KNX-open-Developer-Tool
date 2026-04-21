@@ -19,6 +19,7 @@ channels:
       en: "Channel 1"
 comObjects:
   - id: co1
+    number: 0
     channel: ch1
     name:
       de: "Schalten"
@@ -34,8 +35,13 @@ parameters:
     unit: ms
     default: 100
     range: [0, 5000]
+    memoryOffset: 0
+    size: 2
 memoryLayout:
-  baseAddress: "0x4000"
+  addressTable:     "0x4000"
+  associationTable: "0x4100"
+  parameterBase:    "0x4400"
+  parameterSize:    4
 )yaml";
 
 static const char *INVALID_MANIFEST = R"yaml(
@@ -105,6 +111,26 @@ private slots:
         QCOMPARE(p.defaultValue, QVariant(100));
         QCOMPARE(p.rangeMin,     QVariant(0));
         QCOMPARE(p.rangeMax,     QVariant(5000));
+        QCOMPARE(p.memoryOffset, 0u);
+        QCOMPARE(p.size,         2u);
+        QCOMPARE(p.effectiveSize(), 2u);
+    }
+
+    void parseMemoryLayout()
+    {
+        QTemporaryFile tmp;
+        tmp.setFileTemplate(QStringLiteral("manifest-XXXXXX.yaml"));
+        QVERIFY(tmp.open());
+        tmp.write(VALID_MANIFEST);
+        tmp.flush();
+
+        auto result = loadManifest(tmp.fileName());
+        QVERIFY(result.has_value());
+        QCOMPARE(result->memoryLayout.addressTable,     0x4000u);
+        QCOMPARE(result->memoryLayout.associationTable, 0x4100u);
+        QCOMPARE(result->memoryLayout.parameterBase,    0x4400u);
+        QCOMPARE(result->memoryLayout.parameterSize,    4u);
+        QCOMPARE(result->comObjects[0].number, 0);
     }
 
     void invalidManifestReturnsNullopt()

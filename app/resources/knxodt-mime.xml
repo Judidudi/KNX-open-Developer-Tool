@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-kodtproj">
+    <comment>KNX open Developer Tool Project</comment>
+    <comment xml:lang="de">KNX open Developer Tool Projekt</comment>
+    <glob pattern="*.kodtproj"/>
+    <icon name="knxodt"/>
+  </mime-type>
+</mime-info>
