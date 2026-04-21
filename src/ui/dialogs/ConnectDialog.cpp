@@ -33,7 +33,7 @@ static QWidget *buildKnxIpTab(ConnectDialog *dlg,
     auto *discTop = new QHBoxLayout;
     searchButton  = new QPushButton(ConnectDialog::tr("Suchen"), discGroup);
     statusLabel   = new QLabel(
-        ConnectDialog::tr("Klicken Sie „Suchen", um KNXnet/IP-Interfaces zu finden."), discGroup);
+        ConnectDialog::tr("Klicken Sie \"Suchen\", um KNXnet/IP-Interfaces zu finden."), discGroup);
     statusLabel->setWordWrap(true);
     discTop->addWidget(searchButton);
     discTop->addWidget(statusLabel, 1);
@@ -230,7 +230,7 @@ void ConnectDialog::onAccept()
     QHostAddress addr(m_manualIp->text().trimmed());
     if (addr.isNull()) {
         QMessageBox::warning(this, tr("Ungültige Adresse"),
-            tr("Die IP-Adresse „%1" ist nicht gültig.").arg(m_manualIp->text()));
+            tr("Die IP-Adresse \"%1\" ist nicht gültig.").arg(m_manualIp->text()));
         return;
     }
     m_host = addr;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "UsbKnxInterface.h"
+#include "KnxIpDiscovery.h"
 #include <QDialog>
 #include <QHostAddress>
 
@@ -11,8 +12,6 @@ class QPushButton;
 class QLabel;
 class QTabWidget;
 class QComboBox;
-class KnxIpDiscovery;
-struct KnxIpDevice;
 
 // Tabbed dialog for picking the KNX bus interface.
 //  Tab 0 – KNXnet/IP: discovery (SEARCH_REQUEST) + manual IP entry
