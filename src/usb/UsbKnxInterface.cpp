@@ -6,7 +6,7 @@
 #endif
 
 #ifdef Q_OS_LINUX
-#  include <QSocketNotifier>
+#  include <QTimer>
 #  include <fcntl.h>
 #  include <unistd.h>
 #  include <poll.h>
@@ -90,8 +90,8 @@ struct UsbKnxInterface::Priv
 #endif
 
 #ifdef Q_OS_LINUX
-    int              hidFd       = -1;
-    QSocketNotifier *hidNotifier = nullptr;
+    int     hidFd        = -1;
+    QTimer *hidPollTimer = nullptr;  // replaces QSocketNotifier for reliability
 #endif
 
     explicit Priv(UsbKnxInterface *owner, Transport t, const QString &path)
@@ -188,9 +188,19 @@ struct UsbKnxInterface::Priv
                             "Protokoll wird automatisch erkannt.").arg(devicePath));
         }
 
-        hidNotifier = new QSocketNotifier(hidFd, QSocketNotifier::Read, q);
-        QObject::connect(hidNotifier, &QSocketNotifier::activated, q,
-            [this](QSocketDescriptor, QSocketNotifier::Type) { onHidRead(); });
+        // Poll every 5 ms instead of QSocketNotifier: hidraw fds are not
+        // reliably selectable on all kernel/distro combinations.
+        // Each poll attempt costs one ::read() syscall (returns EAGAIN
+        // immediately when no data is available – negligible CPU overhead).
+        hidPollTimer = new QTimer(q);
+        hidPollTimer->setInterval(5);
+        QObject::connect(hidPollTimer, &QTimer::timeout, q, [this]() {
+            // Drain all buffered reports in one timer tick
+            for (int i = 0; i < 16; ++i) {
+                if (!onHidRead()) break;
+            }
+        });
+        hidPollTimer->start();
 
         connected = true;
         emit q->connected();
@@ -271,37 +281,38 @@ struct UsbKnxInterface::Priv
         return true;
     }
 
-    void onHidRead()
+    // Returns true if a report was read, false if no data was available (EAGAIN).
+    bool onHidRead()
     {
         uint8_t report[HID_REPORT_SIZE] = {};
         const ssize_t n = ::read(hidFd, report, HID_REPORT_SIZE);
-        if (n < 2) return;
+        if (n <= 0) return false;  // EAGAIN or error
+        if (n < 2)  return true;   // too short to be useful, but consumed
 
         // KNX USB HID spec 07_01_01 defines numbered reports (ID = 0x01).
         // Some devices (Hager, older Siemens) use unnumbered reports where
         // the report ID byte is absent from the hidraw stream.
         // Detect format once from the first received frame and remember it.
-        if (report[0] == HID_REPORT_ID && n >= 3) {
+        if (report[0] == HID_REPORT_ID && n >= 3)
             hidNumberedReports = true;
-        } else if (report[0] != HID_REPORT_ID) {
+        else if (report[0] != HID_REPORT_ID)
             hidNumberedReports = false;
-        }
 
         // Locate Packet Info and data length based on format:
         //   Numbered:   [0x01][PacketInfo][DataLen][Data...]
         //   Unnumbered: [PacketInfo][DataLen][Data...]
-        const int     infoOffset = hidNumberedReports ? 1 : 0;
-        const int     dataOffset = infoOffset + 2;
-        if (n < dataOffset) return;
+        const int infoOffset = hidNumberedReports ? 1 : 0;
+        const int dataOffset = infoOffset + 2;
+        if (n < dataOffset) return true;
 
         const uint8_t packetInfo = report[infoOffset];
         const uint8_t protoType  = packetInfo & 0x0F;
-        const int     dataLen    = static_cast<uint8_t>(report[infoOffset + 1]);
+        const int     dataLen    = static_cast<int>(static_cast<uint8_t>(report[infoOffset + 1]));
 
-        if (n < dataOffset + dataLen || dataLen <= 0) return;
-        if (protoType == HID_PROTO_MGMT) return;
+        if (dataLen <= 0 || n < dataOffset + dataLen) return true;
+        if (protoType == HID_PROTO_MGMT) return true;
 
-        // Auto-update the EMI type so sendHid() uses the correct format
+        // Auto-update EMI type so sendHid() uses the correct format
         if (protoType == HID_PROTO_EMI2 || protoType == HID_PROTO_CEMI)
             hidEmiType = protoType;
 
@@ -309,16 +320,17 @@ struct UsbKnxInterface::Priv
         const QByteArray cemi = (protoType == HID_PROTO_EMI2) ? emi2ToCemi(frame) : frame;
         if (!cemi.isEmpty())
             emit q->cemiFrameReceived(cemi);
+        return true;
     }
 #endif
 
     void closeHid()
     {
 #ifdef Q_OS_LINUX
-        if (hidNotifier) {
-            hidNotifier->setEnabled(false);
-            delete hidNotifier;
-            hidNotifier = nullptr;
+        if (hidPollTimer) {
+            hidPollTimer->stop();
+            delete hidPollTimer;
+            hidPollTimer = nullptr;
         }
         if (hidFd >= 0) {
             ::close(hidFd);
