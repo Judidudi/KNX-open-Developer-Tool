@@ -1,5 +1,6 @@
 #include "CemiFrame.h"
 #include <QStringList>
+#include <algorithm>
 
 // APCI codes (KNX spec 03_03_07 "Application Layer", Table 2)
 static constexpr uint16_t APCI_GROUP_VALUE_WRITE         = 0x080;
@@ -105,7 +106,7 @@ QByteArray CemiFrame::buildMemoryWrite(uint16_t destPhysAddr,
     f.destAddress   = destPhysAddr;
     f.groupAddress  = false;
 
-    const uint8_t count = static_cast<uint8_t>(std::min(data.size(), 63));
+    const uint8_t count = static_cast<uint8_t>(std::min<qsizetype>(data.size(), 63));
 
     // APCI A_Memory_Write = 0x0280..0x02BF with low 6 bits = byte count
     // Byte 0: TPCI(0x42 = T_Data_Connected seq=0) | APCI[9:8]=0b10 -> 0x42|0x02 = 0x42

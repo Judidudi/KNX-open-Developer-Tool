@@ -13,6 +13,8 @@
 #endif
 
 #include <QDir>
+#include <algorithm>
+#include <cstring>
 
 // ---- Serial framing ---------------------------------------------------------
 // Start byte 0xAB is not a valid cEMI message code (valid: 0x11/0x2E/0x29).
@@ -310,7 +312,7 @@ struct UsbKnxInterface::Priv
         uint8_t report[HID_REPORT_SIZE] = {};
         report[0] = HID_REPORT_ID;
         report[1] = hidEmiType;
-        const int len = std::min(payload.size(), HID_REPORT_SIZE - 3);
+        const int len = std::min<int>(static_cast<int>(payload.size()), HID_REPORT_SIZE - 3);
         report[2] = static_cast<uint8_t>(len);
         std::memcpy(report + 3, payload.constData(), static_cast<size_t>(len));
         ::write(hidFd, report, HID_REPORT_SIZE);

@@ -1,6 +1,7 @@
 #include "Manifest.h"
 #include <yaml-cpp/yaml.h>
 #include <QFile>
+#include <algorithm>
 #include <optional>
 
 namespace {
