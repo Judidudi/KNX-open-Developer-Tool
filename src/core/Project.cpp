@@ -1,5 +1,6 @@
 #include "Project.h"
 #include "TopologyNode.h"
+#include "DeviceInstance.h"
 
 Project::Project()
     : m_created(QDate::currentDate())

@@ -34,7 +34,7 @@ public:
     bool operator==(const GroupAddress &o) const;
 
 private:
-    int     m_main   = 0;
+    int     m_main   = -1;  // -1 = invalid/default-constructed
     int     m_middle = 0;
     int     m_sub    = 0;
     QString m_name;
