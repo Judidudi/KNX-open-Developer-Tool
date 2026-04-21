@@ -8,7 +8,7 @@ TopologyNode::TopologyNode(Type type, int id, const QString &name, TopologyNode 
 void TopologyNode::addChild(std::unique_ptr<TopologyNode> child)
 {
     child->m_parent = this;
-    m_children.append(std::move(child));
+    m_children.push_back(std::move(child));
 }
 
 TopologyNode *TopologyNode::childAt(int index)
@@ -43,7 +43,7 @@ int TopologyNode::indexInParent() const
 
 void TopologyNode::addDevice(std::unique_ptr<DeviceInstance> device)
 {
-    m_devices.append(std::move(device));
+    m_devices.push_back(std::move(device));
 }
 
 DeviceInstance *TopologyNode::deviceAt(int index)

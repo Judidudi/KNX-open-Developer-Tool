@@ -2,8 +2,9 @@
 
 #include "ComObjectLink.h"
 #include <QString>
-#include <QMap>
+#include <QVariant>
 #include <QList>
+#include <map>
 #include <memory>
 
 struct Manifest;
@@ -25,9 +26,11 @@ public:
     QString physicalAddress() const { return m_physAddr; }
     void    setPhysicalAddress(const QString &addr) { m_physAddr = addr; }
 
-    // Parameter values keyed by parameter id
-    QMap<QString, QVariant> &parameters()             { return m_params; }
-    const QMap<QString, QVariant> &parameters() const { return m_params; }
+    // Parameter values keyed by parameter id.
+    // std::map is used instead of QMap because Qt 6.4 requires nothrow-destructible
+    // value types for Qt containers, and QVariant does not guarantee that.
+    std::map<QString, QVariant> &parameters()             { return m_params; }
+    const std::map<QString, QVariant> &parameters() const { return m_params; }
 
     // ComObject links
     void                         addLink(ComObjectLink link);
@@ -40,11 +43,11 @@ public:
     const Manifest *manifest() const { return m_manifest.get(); }
 
 private:
-    QString                  m_id;
-    QString                  m_catalogRef;
-    QString                  m_manifestVersion;
-    QString                  m_physAddr;
-    QMap<QString, QVariant>  m_params;
-    QList<ComObjectLink>     m_links;
-    std::shared_ptr<Manifest> m_manifest;
+    QString                      m_id;
+    QString                      m_catalogRef;
+    QString                      m_manifestVersion;
+    QString                      m_physAddr;
+    std::map<QString, QVariant>  m_params;
+    QList<ComObjectLink>         m_links;
+    std::shared_ptr<Manifest>    m_manifest;
 };
