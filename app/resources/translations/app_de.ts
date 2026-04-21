@@ -193,6 +193,7 @@
     <message><source>Konnte %1 nicht öffnen (kein Zugriff? udev-Regel prüfen).</source><translation type="unfinished"></translation></message>
     <message><source>USB-HID-Interface ist nur unter Linux verfügbar.</source><translation type="unfinished"></translation></message>
     <message><source>USB-Interface: Nicht verbunden.</source><translation type="unfinished"></translation></message>
+    <message><source>USB-HID %1: Protokollaushandlung fehlgeschlagen – cEMI wird als Fallback verwendet.</source><translation type="unfinished"></translation></message>
 </context>
 
 </TS>

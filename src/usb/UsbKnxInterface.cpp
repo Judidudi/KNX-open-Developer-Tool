@@ -9,32 +9,77 @@
 #  include <QSocketNotifier>
 #  include <fcntl.h>
 #  include <unistd.h>
-#  include <dirent.h>
-#  include <linux/hidraw.h>
-#  include <sys/ioctl.h>
+#  include <poll.h>
 #endif
 
 #include <QDir>
-#include <QFileInfo>
 
 // ---- Serial framing ---------------------------------------------------------
-// Start byte 0xAB is not a valid cEMI message code (0x11/0x2E/0x29), allowing
-// byte-level resynchronization without state machine complexity.
-static constexpr uint8_t SERIAL_START = 0xAB;
+// Start byte 0xAB is not a valid cEMI message code (valid: 0x11/0x2E/0x29).
+static constexpr uint8_t SERIAL_START     = 0xAB;
 
-// ---- HID report format (KNX spec 07_01_01) ----------------------------------
-static constexpr int    HID_REPORT_SIZE  = 64;
-static constexpr uint8_t HID_REPORT_ID   = 0x01;
-static constexpr uint8_t HID_PACKET_INFO = 0x13; // single packet, cEMI protocol
+// ---- KNX USB HID (spec 07_01_01) -------------------------------------------
+static constexpr int    HID_REPORT_SIZE   = 64;
+static constexpr uint8_t HID_REPORT_ID    = 0x01;
 
-// ---- Priv implementation ----------------------------------------------------
+// HID Packet Info – lower nibble is the protocol/transport type:
+//   0x00 = KNX USB management (Device Feature Get/Set)
+//   0x01 = EMI1
+//   0x02 = EMI2
+//   0x03 = cEMI
+static constexpr uint8_t HID_PROTO_MGMT  = 0x00;
+static constexpr uint8_t HID_PROTO_EMI2  = 0x02;
+static constexpr uint8_t HID_PROTO_CEMI  = 0x03;
+
+// KNX USB management service types (big-endian 16-bit in body bytes 0-1)
+static constexpr uint8_t SVC_FEAT_GET_REQ  = 0x30; // 0x0530
+static constexpr uint8_t SVC_FEAT_GET_RESP = 0x31; // 0x0531
+static constexpr uint8_t SVC_FEAT_SET_REQ  = 0x32; // 0x0532
+static constexpr uint8_t SVC_FEAT_SET_RESP = 0x33; // 0x0533
+static constexpr uint8_t SVC_PREFIX        = 0x05;
+
+// Feature IDs
+static constexpr uint8_t FEAT_SUPPORTED_EMI = 0x01; // bitmap: bit0=EMI1 bit1=EMI2 bit2=cEMI
+static constexpr uint8_t FEAT_CURRENT_EMI   = 0x02; // value: 0x01/0x02/0x03
+
+// Timeout for HID feature negotiation reads
+static constexpr int HID_INIT_TIMEOUT_MS = 1000;
+
+// ---- Frame conversion helpers -----------------------------------------------
+// cEMI: [msgCode][addInfoLen][addInfo...][ctrl1][ctrl2][src][dst][apduLen][apdu...]
+// EMI2: [msgCode][ctrl1][ctrl2][src][dst][apduLen][apdu...]  (no addInfo section)
+
+static QByteArray emi2ToCemi(const QByteArray &emi2)
+{
+    if (emi2.isEmpty()) return emi2;
+    QByteArray cemi;
+    cemi.reserve(emi2.size() + 1);
+    cemi.append(emi2[0]);       // message code
+    cemi.append(char(0x00));    // addInfoLen = 0  (inserted)
+    cemi.append(emi2.mid(1));   // ctrl1, ctrl2, addresses, APDU
+    return cemi;
+}
+
+static QByteArray cemiToEmi2(const QByteArray &cemi)
+{
+    if (cemi.size() < 3) return cemi;
+    const int addLen = static_cast<uint8_t>(cemi[1]);
+    QByteArray emi2;
+    emi2.reserve(cemi.size() - 1 - addLen);
+    emi2.append(cemi[0]);                  // message code
+    emi2.append(cemi.mid(2 + addLen));     // skip addInfoLen + addInfo bytes
+    return emi2;
+}
+
+// ---- Priv -------------------------------------------------------------------
 
 struct UsbKnxInterface::Priv
 {
     UsbKnxInterface *q;
     Transport    transport;
     QString      devicePath;
-    bool         connected = false;
+    bool         connected  = false;
+    uint8_t      hidEmiType = HID_PROTO_CEMI; // negotiated at connect time
     QByteArray   recvBuf;
 
 #ifndef KNXODT_NO_SERIAL
@@ -50,6 +95,10 @@ struct UsbKnxInterface::Priv
         : q(owner), transport(t), devicePath(path)
     {}
 
+    // ------------------------------------------------------------------
+    // Serial
+    // ------------------------------------------------------------------
+
     bool openSerial()
     {
 #ifndef KNXODT_NO_SERIAL
@@ -59,7 +108,8 @@ struct UsbKnxInterface::Priv
         }
         if (!serial) {
             serial = new QSerialPort(q);
-            QObject::connect(serial, &QSerialPort::readyRead, q, [this]() { onSerialRead(); });
+            QObject::connect(serial, &QSerialPort::readyRead,
+                             q, [this]() { onSerialRead(); });
             QObject::connect(serial, &QSerialPort::errorOccurred, q,
                 [this](QSerialPort::SerialPortError e) {
                     if (e != QSerialPort::NoError) {
@@ -102,6 +152,10 @@ struct UsbKnxInterface::Priv
 #endif
     }
 
+    // ------------------------------------------------------------------
+    // HID
+    // ------------------------------------------------------------------
+
     bool openHid()
     {
 #ifdef Q_OS_LINUX
@@ -116,11 +170,23 @@ struct UsbKnxInterface::Priv
                     .arg(devicePath));
             return false;
         }
+
+        // Negotiate EMI protocol type via Device Feature Get/Set (spec 07_01_01).
+        // Falls back to cEMI if the device does not respond to management frames
+        // (some devices work without explicit negotiation).
+        if (!negotiateHidProtocol()) {
+            emit q->errorOccurred(
+                QObject::tr("USB-HID %1: Protokollaushandlung fehlgeschlagen – "
+                            "cEMI wird als Fallback verwendet.").arg(devicePath));
+            hidEmiType = HID_PROTO_CEMI;
+            // Do NOT close – attempt to use the device anyway
+        }
+
         hidNotifier = new QSocketNotifier(hidFd, QSocketNotifier::Read, q);
         QObject::connect(hidNotifier, &QSocketNotifier::activated, q,
             [this](QSocketDescriptor, QSocketNotifier::Type) { onHidRead(); });
+
         connected = true;
-        recvBuf.clear();
         emit q->connected();
         return true;
 #else
@@ -128,6 +194,95 @@ struct UsbKnxInterface::Priv
         return false;
 #endif
     }
+
+#ifdef Q_OS_LINUX
+    // Wait up to timeoutMs for a complete HID report. Returns false on timeout/error.
+    bool hidPollRead(uint8_t *buf, int timeoutMs)
+    {
+        struct pollfd pfd { hidFd, POLLIN, 0 };
+        if (::poll(&pfd, 1, timeoutMs) <= 0) return false;
+        return ::read(hidFd, buf, HID_REPORT_SIZE) == HID_REPORT_SIZE;
+    }
+
+    // Send a KNX USB management request and read back the response.
+    // body: bytes after the 2-byte service type prefix (0x05 XX).
+    bool hidMgmtRequest(uint8_t svcByte, const QByteArray &body,
+                        uint8_t expectedRespSvc, QByteArray &respBody)
+    {
+        uint8_t req[HID_REPORT_SIZE] = {};
+        req[0] = HID_REPORT_ID;
+        req[1] = HID_PROTO_MGMT;
+        req[2] = static_cast<uint8_t>(2 + body.size()); // service type (2) + body
+        req[3] = SVC_PREFIX;
+        req[4] = svcByte;
+        std::memcpy(req + 5, body.constData(), static_cast<size_t>(body.size()));
+
+        if (::write(hidFd, req, HID_REPORT_SIZE) != HID_REPORT_SIZE)
+            return false;
+
+        uint8_t resp[HID_REPORT_SIZE] = {};
+        if (!hidPollRead(resp, HID_INIT_TIMEOUT_MS))
+            return false;
+        if (resp[0] != HID_REPORT_ID || (resp[1] & 0x0F) != HID_PROTO_MGMT)
+            return false;
+        if (resp[3] != SVC_PREFIX || resp[4] != expectedRespSvc)
+            return false;
+
+        const int dataLen = resp[2];
+        if (dataLen < 2) return false;
+        respBody = QByteArray(reinterpret_cast<const char *>(resp + 5), dataLen - 2);
+        return true;
+    }
+
+    bool negotiateHidProtocol()
+    {
+        // Step 1: query supported EMI types
+        QByteArray resp;
+        const QByteArray getReq(1, static_cast<char>(FEAT_SUPPORTED_EMI));
+        if (!hidMgmtRequest(SVC_FEAT_GET_REQ, getReq, SVC_FEAT_GET_RESP, resp))
+            return false;
+
+        // resp[0] = feature id, resp[1] = supported bitmap
+        if (resp.size() < 2 || static_cast<uint8_t>(resp[0]) != FEAT_SUPPORTED_EMI)
+            return false;
+
+        const uint8_t supported = static_cast<uint8_t>(resp[1]);
+        // bit2 = cEMI, bit1 = EMI2, bit0 = EMI1
+        uint8_t chosen;
+        if      (supported & 0x04) chosen = HID_PROTO_CEMI;
+        else if (supported & 0x02) chosen = HID_PROTO_EMI2;
+        else return false; // only EMI1 – not supported by this tool
+
+        // Step 2: set chosen EMI type
+        QByteArray setReq;
+        setReq.append(static_cast<char>(FEAT_CURRENT_EMI));
+        setReq.append(static_cast<char>(chosen));
+        QByteArray setResp;
+        if (!hidMgmtRequest(SVC_FEAT_SET_REQ, setReq, SVC_FEAT_SET_RESP, setResp))
+            return false;
+
+        hidEmiType = chosen;
+        return true;
+    }
+
+    void onHidRead()
+    {
+        uint8_t report[HID_REPORT_SIZE] = {};
+        const ssize_t n = ::read(hidFd, report, HID_REPORT_SIZE);
+        if (n < 3) return;
+        if (report[0] != HID_REPORT_ID) return;
+
+        const uint8_t protoType = report[1] & 0x0F;
+        const int dataLen       = report[2];
+        if (n < 3 + dataLen) return;
+
+        if (protoType == HID_PROTO_MGMT) return; // management response, ignore
+
+        const QByteArray frame(reinterpret_cast<const char *>(report + 3), dataLen);
+        const QByteArray cemi = (protoType == HID_PROTO_EMI2) ? emi2ToCemi(frame) : frame;
+        emit q->cemiFrameReceived(cemi);
+    }
+#endif
 
     void closeHid()
     {
@@ -144,6 +299,66 @@ struct UsbKnxInterface::Priv
 #endif
     }
 
+    void sendHid(const QByteArray &cemi)
+    {
+#ifdef Q_OS_LINUX
+        if (hidFd < 0) return;
+
+        const QByteArray payload = (hidEmiType == HID_PROTO_EMI2)
+                                   ? cemiToEmi2(cemi) : cemi;
+
+        uint8_t report[HID_REPORT_SIZE] = {};
+        report[0] = HID_REPORT_ID;
+        report[1] = hidEmiType;
+        const int len = std::min(payload.size(), HID_REPORT_SIZE - 3);
+        report[2] = static_cast<uint8_t>(len);
+        std::memcpy(report + 3, payload.constData(), static_cast<size_t>(len));
+        ::write(hidFd, report, HID_REPORT_SIZE);
+#else
+        Q_UNUSED(cemi)
+#endif
+    }
+
+    // ------------------------------------------------------------------
+    // Serial receive
+    // ------------------------------------------------------------------
+
+    void onSerialRead()
+    {
+#ifndef KNXODT_NO_SERIAL
+        if (!serial) return;
+        recvBuf.append(serial->readAll());
+        parseSerialBuffer();
+#endif
+    }
+
+    void parseSerialBuffer()
+    {
+        // Format: [0xAB][len_hi][len_lo][cemi_bytes…]
+        // Resync by scanning for the 0xAB start byte.
+        while (recvBuf.size() >= 3) {
+            int start = -1;
+            for (int i = 0; i < recvBuf.size(); ++i) {
+                if (static_cast<uint8_t>(recvBuf[i]) == SERIAL_START) {
+                    start = i;
+                    break;
+                }
+            }
+            if (start < 0) { recvBuf.clear(); return; }
+            if (start > 0)  recvBuf.remove(0, start);
+            if (recvBuf.size() < 3) return;
+
+            const int payloadLen =
+                (static_cast<uint8_t>(recvBuf[1]) << 8) |
+                 static_cast<uint8_t>(recvBuf[2]);
+            if (recvBuf.size() < 3 + payloadLen) return;
+
+            const QByteArray cemi = recvBuf.mid(3, payloadLen);
+            recvBuf.remove(0, 3 + payloadLen);
+            emit q->cemiFrameReceived(cemi);
+        }
+    }
+
     void sendSerial(const QByteArray &cemi)
     {
 #ifndef KNXODT_NO_SERIAL
@@ -156,79 +371,6 @@ struct UsbKnxInterface::Priv
         frame.append(cemi);
         serial->write(frame);
 #endif
-    }
-
-    void sendHid(const QByteArray &cemi)
-    {
-#ifdef Q_OS_LINUX
-        if (hidFd < 0) return;
-        uint8_t report[HID_REPORT_SIZE] = {};
-        report[0] = HID_REPORT_ID;
-        report[1] = HID_PACKET_INFO;
-        const int len = std::min(static_cast<int>(cemi.size()), HID_REPORT_SIZE - 3);
-        report[2] = static_cast<uint8_t>(len);
-        std::memcpy(report + 3, cemi.constData(), static_cast<size_t>(len));
-        ::write(hidFd, report, HID_REPORT_SIZE);
-#else
-        Q_UNUSED(cemi)
-#endif
-    }
-
-    void onSerialRead()
-    {
-#ifndef KNXODT_NO_SERIAL
-        if (!serial) return;
-        recvBuf.append(serial->readAll());
-        parseSerialBuffer();
-#endif
-    }
-
-    void onHidRead()
-    {
-#ifdef Q_OS_LINUX
-        uint8_t report[HID_REPORT_SIZE] = {};
-        const ssize_t n = ::read(hidFd, report, HID_REPORT_SIZE);
-        if (n < 3) return;
-        if (report[0] != HID_REPORT_ID) return;
-        const int dataLen = report[2];
-        if (n < 3 + dataLen) return;
-        const QByteArray cemi(reinterpret_cast<const char *>(report + 3), dataLen);
-        emit q->cemiFrameReceived(cemi);
-#endif
-    }
-
-    void parseSerialBuffer()
-    {
-        // Consume bytes until we have a complete frame.
-        // Format: [0xAB][len_hi][len_lo][cemi...]
-        while (recvBuf.size() >= 3) {
-            // Resync: skip bytes until start marker
-            int start = -1;
-            for (int i = 0; i < recvBuf.size(); ++i) {
-                if (static_cast<uint8_t>(recvBuf[i]) == SERIAL_START) {
-                    start = i;
-                    break;
-                }
-            }
-            if (start < 0) {
-                recvBuf.clear();
-                return;
-            }
-            if (start > 0)
-                recvBuf.remove(0, start);
-
-            if (recvBuf.size() < 3) return; // need length bytes
-
-            const int payloadLen =
-                (static_cast<uint8_t>(recvBuf[1]) << 8) |
-                 static_cast<uint8_t>(recvBuf[2]);
-
-            if (recvBuf.size() < 3 + payloadLen) return; // incomplete
-
-            const QByteArray cemi = recvBuf.mid(3, payloadLen);
-            recvBuf.remove(0, 3 + payloadLen);
-            emit q->cemiFrameReceived(cemi);
-        }
     }
 };
 
@@ -252,22 +394,16 @@ bool      UsbKnxInterface::isConnected() const { return d->connected;   }
 
 bool UsbKnxInterface::connectToInterface()
 {
-    if (d->connected)
-        return true;
-    if (d->transport == Transport::Serial)
-        return d->openSerial();
-    return d->openHid();
+    if (d->connected) return true;
+    return (d->transport == Transport::Serial) ? d->openSerial() : d->openHid();
 }
 
 void UsbKnxInterface::disconnectFromInterface()
 {
-    if (!d->connected)
-        return;
+    if (!d->connected) return;
     d->connected = false;
-    if (d->transport == Transport::Serial)
-        d->closeSerial();
-    else
-        d->closeHid();
+    if (d->transport == Transport::Serial) d->closeSerial();
+    else                                   d->closeHid();
     emit disconnected();
 }
 
@@ -277,20 +413,17 @@ void UsbKnxInterface::sendCemiFrame(const QByteArray &cemi)
         emit errorOccurred(tr("USB-Interface: Nicht verbunden."));
         return;
     }
-    if (d->transport == Transport::Serial)
-        d->sendSerial(cemi);
-    else
-        d->sendHid(cemi);
+    if (d->transport == Transport::Serial) d->sendSerial(cemi);
+    else                                   d->sendHid(cemi);
 }
 
 QStringList UsbKnxInterface::availableSerialPorts()
 {
     QStringList result;
 #ifndef KNXODT_NO_SERIAL
-    for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts()) {
+    for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts())
         if (!info.isNull())
             result << info.systemLocation();
-    }
 #endif
     return result;
 }
