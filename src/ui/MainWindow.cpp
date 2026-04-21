@@ -1,10 +1,10 @@
 #include "MainWindow.h"
 
 #include "ProjectTreeWidget.h"
-#include "CatalogWidget.h"
 #include "DeviceEditorWidget.h"
 #include "BusMonitorWidget.h"
 #include "ProgramDialog.h"
+#include "PropertiesPanel.h"
 #include "dialogs/NewProjectDialog.h"
 #include "dialogs/ConnectDialog.h"
 #include "dialogs/GroupAddressDialog.h"
@@ -15,6 +15,7 @@
 #include "DeviceCatalog.h"
 #include "Manifest.h"
 #include "ProjectXmlSerializer.h"
+#include "GroupAddress.h"
 
 #include "InterfaceManager.h"
 #include "IKnxInterface.h"
@@ -28,6 +29,7 @@
 #include <QStackedWidget>
 #include <QLabel>
 #include <QAction>
+#include <QDockWidget>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QCloseEvent>
@@ -51,7 +53,7 @@ MainWindow::MainWindow(QWidget *parent)
     loadCatalog();
 
     m_projectTree->setProject(m_project.get());
-    m_catalogView->setCatalog(m_catalog.get());
+    m_projectTree->setCatalog(m_catalog.get());
     m_busMonitor->setInterfaceManager(m_interfaces.get());
 
     connect(m_interfaces.get(), &InterfaceManager::connected,
@@ -63,25 +65,22 @@ MainWindow::MainWindow(QWidget *parent)
 
     updateConnectionUi();
     updateWindowTitle();
-    resize(1200, 750);
+    resize(1280, 800);
 }
 
 MainWindow::~MainWindow() = default;
 
 void MainWindow::loadCatalog()
 {
-    // Priority 1: env override (useful for CI / tests)
     QString envPath = qEnvironmentVariable("KNXODT_CATALOG_PATH");
     if (!envPath.isEmpty())
         m_catalog->addSearchPath(envPath);
 
-    // Priority 2: catalog/devices next to the executable (dev builds)
     const QDir appDir(QCoreApplication::applicationDirPath());
     m_catalog->addSearchPath(appDir.absoluteFilePath(QStringLiteral("catalog/devices")));
     m_catalog->addSearchPath(appDir.absoluteFilePath(QStringLiteral("../catalog/devices")));
     m_catalog->addSearchPath(appDir.absoluteFilePath(QStringLiteral("../../catalog/devices")));
 
-    // Priority 3: per-user catalog
     const QString userPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
                              + QStringLiteral("/catalog/devices");
     QDir().mkpath(userPath);
@@ -112,7 +111,8 @@ void MainWindow::setupMenuBar()
     fileMenu->addAction(tr("&Beenden"), qApp, &QApplication::quit, QKeySequence::Quit);
 
     QMenu *projectMenu = menuBar()->addMenu(tr("&Projekt"));
-    m_actAddGroupAddr = projectMenu->addAction(tr("Gruppenadresse hinzufügen…"), this, &MainWindow::addGroupAddress);
+    m_actAddGroupAddr = projectMenu->addAction(tr("Gruppenadresse hinzufügen…"),
+                                               this, &MainWindow::addGroupAddress);
 
     QMenu *busMenu = menuBar()->addMenu(tr("&Bus"));
     m_actConnect    = busMenu->addAction(tr("&Verbinden…"),     this, &MainWindow::onConnectClicked);
@@ -154,7 +154,6 @@ void MainWindow::setupCentralWidget()
     m_projectTree  = new ProjectTreeWidget(this);
     m_deviceEditor = new DeviceEditorWidget(this);
     m_busMonitor   = new BusMonitorWidget(this);
-    m_catalogView  = new CatalogWidget(this);
 
     m_centerStack = new QStackedWidget(this);
     m_centerStack->addWidget(m_deviceEditor);
@@ -164,26 +163,45 @@ void MainWindow::setupCentralWidget()
     auto *splitter = new QSplitter(Qt::Horizontal, this);
     splitter->addWidget(m_projectTree);
     splitter->addWidget(m_centerStack);
-    splitter->addWidget(m_catalogView);
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 3);
-    splitter->setStretchFactor(2, 1);
-    splitter->setSizes({260, 680, 260});
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({300, 980});
     setCentralWidget(splitter);
 
+    // Properties dock on the right
+    m_propertiesPanel = new PropertiesPanel(this);
+    addDockWidget(Qt::RightDockWidgetArea, m_propertiesPanel);
+
     connect(m_projectTree, &ProjectTreeWidget::deviceSelected,
-            this,          &MainWindow::onDeviceSelected);
+            this, &MainWindow::onDeviceSelected);
+    connect(m_projectTree, &ProjectTreeWidget::groupAddressSelected,
+            this, &MainWindow::onGroupAddressSelected);
     connect(m_projectTree, &ProjectTreeWidget::selectionCleared,
-            this, [this](){ m_deviceEditor->clearDevice(); });
-    connect(m_catalogView, &CatalogWidget::addDeviceRequested,
-            this,          &MainWindow::onAddDeviceRequested);
+            this, [this]() {
+                m_deviceEditor->clearDevice();
+                m_propertiesPanel->clearSelection();
+            });
+    connect(m_projectTree, &ProjectTreeWidget::addDeviceRequested,
+            this, &MainWindow::onAddDeviceRequested);
     connect(m_deviceEditor, &DeviceEditorWidget::deviceModified,
             this, [this](){ markModified(); });
+
+    connect(m_propertiesPanel, &PropertiesPanel::deviceModified,
+            this, [this]() {
+                m_projectTree->refresh();
+                markModified();
+            });
+    connect(m_propertiesPanel, &PropertiesPanel::groupAddressModified,
+            this, [this]() {
+                m_projectTree->refresh();
+                markModified();
+            });
 }
 
 void MainWindow::setupStatusBar()
 {
-    m_connectionStatusLabel = new QLabel(tr("● Nicht verbunden"), this);
+    m_connectionStatusLabel = new QLabel(this);
+    m_connectionStatusLabel->setTextFormat(Qt::RichText);
     statusBar()->addPermanentWidget(m_connectionStatusLabel);
     statusBar()->showMessage(tr("Bereit"));
 }
@@ -216,7 +234,6 @@ void MainWindow::newProject()
     m_project = std::make_unique<Project>();
     m_project->setName(dlg.projectName());
 
-    // Seed one Area + one Line so users can immediately drop devices
     auto area = std::make_unique<TopologyNode>(TopologyNode::Type::Area, 1, tr("Bereich 1"));
     auto line = std::make_unique<TopologyNode>(TopologyNode::Type::Line, 1, tr("Linie 1"));
     area->addChild(std::move(line));
@@ -227,6 +244,7 @@ void MainWindow::newProject()
 
     m_projectTree->setProject(m_project.get());
     m_deviceEditor->clearDevice();
+    m_propertiesPanel->clearSelection();
     updateWindowTitle();
     statusBar()->showMessage(tr("Neues Projekt angelegt"));
 }
@@ -255,6 +273,7 @@ void MainWindow::openProject()
 
     m_projectTree->setProject(m_project.get());
     m_deviceEditor->clearDevice();
+    m_propertiesPanel->clearSelection();
     updateWindowTitle();
     statusBar()->showMessage(tr("Projekt geladen: %1").arg(path));
 }
@@ -309,7 +328,6 @@ void MainWindow::onAddDeviceRequested(std::shared_ptr<Manifest> manifest)
     if (!manifest)
         return;
 
-    // Place the new device on the first line of the first area – create one if missing
     if (m_project->areaCount() == 0)
         m_project->addArea(std::make_unique<TopologyNode>(TopologyNode::Type::Area, 1, tr("Bereich 1")));
     TopologyNode *area = m_project->areaAt(0);
@@ -317,7 +335,6 @@ void MainWindow::onAddDeviceRequested(std::shared_ptr<Manifest> manifest)
         area->addChild(std::make_unique<TopologyNode>(TopologyNode::Type::Line, 1, tr("Linie 1")));
     TopologyNode *line = area->childAt(0);
 
-    // Auto-assign next free physical address on this line
     const int nextMember = line->deviceCount() + 1;
     const QString physAddr = QStringLiteral("%1.%2.%3").arg(area->id()).arg(line->id()).arg(nextMember);
 
@@ -326,11 +343,9 @@ void MainWindow::onAddDeviceRequested(std::shared_ptr<Manifest> manifest)
     dev->setPhysicalAddress(physAddr);
     dev->setManifest(manifest);
 
-    // Fill default parameter values from manifest
     for (const ManifestParameter &p : manifest->parameters)
         dev->parameters()[p.id] = p.defaultValue;
 
-    // Pre-create empty ComObject links
     for (const ManifestComObject &co : manifest->comObjects) {
         ComObjectLink link;
         link.comObjectId = co.id;
@@ -348,20 +363,27 @@ void MainWindow::onDeviceSelected(DeviceInstance *device)
     m_selectedDevice = device;
     if (!device) {
         m_deviceEditor->clearDevice();
+        m_propertiesPanel->clearSelection();
         updateConnectionUi();
         return;
     }
 
-    // Resolve manifest lazily if not already set
     if (!device->manifest())
         device->setManifest(m_catalog->sharedById(device->catalogRef()));
 
     m_deviceEditor->setDevice(device, m_project.get());
     m_centerStack->setCurrentWidget(m_deviceEditor);
+    m_propertiesPanel->showDevice(device);
     updateConnectionUi();
 }
 
-// ---------- Phase 4: connect / program -------------------------------------
+void MainWindow::onGroupAddressSelected(GroupAddress *ga)
+{
+    m_selectedDevice = nullptr;
+    m_deviceEditor->clearDevice();
+    m_propertiesPanel->showGroupAddress(ga);
+    updateConnectionUi();
+}
 
 void MainWindow::onConnectClicked()
 {
@@ -457,9 +479,14 @@ void MainWindow::updateConnectionUi()
     if (m_actConnect)    m_actConnect->setEnabled(!connected);
     if (m_actDisconnect) m_actDisconnect->setEnabled(connected);
     if (m_actProgram)    m_actProgram->setEnabled(connected && m_selectedDevice != nullptr);
-    if (m_connectionStatusLabel)
-        m_connectionStatusLabel->setText(connected ? tr("● Verbunden")
-                                                   : tr("● Nicht verbunden"));
+
+    if (m_connectionStatusLabel) {
+        const QString dot = connected
+            ? QStringLiteral("<span style='color:#4CAF50; font-size:14px;'>&#9679;</span>")
+            : QStringLiteral("<span style='color:#888888; font-size:14px;'>&#9679;</span>");
+        const QString text = connected ? tr("Verbunden") : tr("Nicht verbunden");
+        m_connectionStatusLabel->setText(dot + QStringLiteral(" ") + text);
+    }
 }
 
 bool MainWindow::maybeSave()
@@ -474,7 +501,7 @@ bool MainWindow::maybeSave()
 
     if (btn == QMessageBox::Save) {
         saveProject();
-        return !m_modified;  // still modified if save was cancelled
+        return !m_modified;
     }
     return btn != QMessageBox::Cancel;
 }

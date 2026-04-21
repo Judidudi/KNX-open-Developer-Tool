@@ -6,13 +6,14 @@
 class Project;
 class DeviceCatalog;
 class DeviceInstance;
+class GroupAddress;
 struct Manifest;
 
 class InterfaceManager;
 class ProjectTreeWidget;
-class CatalogWidget;
 class DeviceEditorWidget;
 class BusMonitorWidget;
+class PropertiesPanel;
 
 class QStackedWidget;
 class QLabel;
@@ -37,6 +38,7 @@ private slots:
     void addGroupAddress();
     void onAddDeviceRequested(std::shared_ptr<Manifest> manifest);
     void onDeviceSelected(DeviceInstance *device);
+    void onGroupAddressSelected(GroupAddress *ga);
     void onConnectClicked();
     void onDisconnectClicked();
     void onProgramClicked();
@@ -61,10 +63,10 @@ private:
     std::unique_ptr<InterfaceManager> m_interfaces;
 
     ProjectTreeWidget  *m_projectTree  = nullptr;
-    CatalogWidget      *m_catalogView  = nullptr;
     DeviceEditorWidget *m_deviceEditor = nullptr;
     BusMonitorWidget   *m_busMonitor   = nullptr;
     QStackedWidget     *m_centerStack  = nullptr;
+    PropertiesPanel    *m_propertiesPanel = nullptr;
 
     QLabel  *m_connectionStatusLabel = nullptr;
     QString  m_currentFilePath;

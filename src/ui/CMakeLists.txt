@@ -17,6 +17,8 @@ add_library(knxodt_ui STATIC
     BusMonitorModel.cpp
     ProgramDialog.h
     ProgramDialog.cpp
+    PropertiesPanel.h
+    PropertiesPanel.cpp
     dialogs/NewProjectDialog.h
     dialogs/NewProjectDialog.cpp
     dialogs/ConnectDialog.h
