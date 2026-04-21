@@ -7,6 +7,7 @@
 #include <QMap>
 #include <optional>
 #include <cstdint>
+#include <vector>
 
 // Parsed representation of a device YAML manifest.
 
@@ -79,9 +80,9 @@ struct Manifest {
     QString                   manufacturer;
     ManifestLocalizedString   name;
     ManifestHardware          hardware;
-    QList<ManifestChannel>    channels;
-    QList<ManifestComObject>  comObjects;
-    QList<ManifestParameter>  parameters;
+    QList<ManifestChannel>              channels;
+    QList<ManifestComObject>            comObjects;
+    std::vector<ManifestParameter>      parameters;
     ManifestMemoryLayout      memoryLayout;
 
     bool isValid() const { return !id.isEmpty() && !version.isEmpty(); }

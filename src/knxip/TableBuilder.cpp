@@ -95,7 +95,8 @@ DeviceMemoryImage TableBuilder::build(const DeviceInstance &device, const Manife
     img.parameterBlock = QByteArray(static_cast<int>(paramSize), char(0));
 
     for (const ManifestParameter &p : manifest.parameters) {
-        const QVariant v = device.parameters().value(p.id, p.defaultValue);
+        auto paramIt = device.parameters().find(p.id);
+        const QVariant v = (paramIt != device.parameters().end()) ? paramIt->second : p.defaultValue;
         writeU32LE(img.parameterBlock, p.memoryOffset,
                    static_cast<uint32_t>(v.toInt()), p.effectiveSize());
     }

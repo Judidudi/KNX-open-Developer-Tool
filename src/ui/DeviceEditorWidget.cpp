@@ -99,7 +99,8 @@ void DeviceEditorWidget::buildParameterTab()
     const Manifest *m = m_device->manifest();
 
     for (const ManifestParameter &p : m->parameters) {
-        const QVariant currentValue = m_device->parameters().value(p.id, p.defaultValue);
+        auto paramIt = m_device->parameters().find(p.id);
+        const QVariant currentValue = (paramIt != m_device->parameters().end()) ? paramIt->second : p.defaultValue;
         QWidget *editor = nullptr;
 
         if (p.type == QLatin1String("bool")) {
@@ -142,7 +143,7 @@ void DeviceEditorWidget::buildParameterTab()
         m_paramLayout->addRow(p.name.get() + QStringLiteral(":"), editor);
     }
 
-    if (m->parameters.isEmpty())
+    if (m->parameters.empty())
         m_paramLayout->addRow(new QLabel(tr("Dieses Gerät hat keine Parameter."), m_paramTab));
 
     m_updating = false;

@@ -7,6 +7,7 @@
 
 #include <QIcon>
 #include <QMap>
+#include <vector>
 
 // Internal tree node. Built once in rebuild() and owned by the model.
 struct ProjectTreeModel::Node {
@@ -16,14 +17,14 @@ struct ProjectTreeModel::Node {
     void                 *rawPtr = nullptr;  // TopologyNode*, DeviceInstance*, GroupAddress*
     Node                 *parent = nullptr;
     int                   row    = 0;
-    QList<std::unique_ptr<Node>> children;
+    std::vector<std::unique_ptr<Node>> children;
 
     Node *addChild(std::unique_ptr<Node> c)
     {
         c->parent = this;
         c->row    = children.size();
         Node *ptr = c.get();
-        children.append(std::move(c));
+        children.push_back(std::move(c));
         return ptr;
     }
 };

@@ -84,7 +84,8 @@ private slots:
         p2.type = QStringLiteral("uint8");
         p2.memoryOffset = 2;
         p2.size = 1;
-        m.parameters << p1 << p2;
+        m.parameters.push_back(p1);
+        m.parameters.push_back(p2);
         m.memoryLayout.parameterSize = 4;
 
         DeviceInstance dev(QStringLiteral("d1"), QStringLiteral("dev"), QStringLiteral("1.0.0"));

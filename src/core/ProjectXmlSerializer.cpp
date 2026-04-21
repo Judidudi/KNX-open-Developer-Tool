@@ -20,10 +20,10 @@ static void writeDevice(QXmlStreamWriter &xml, const DeviceInstance &dev)
     xml.writeAttribute(QStringLiteral("version"),     dev.manifestVersion());
 
     xml.writeStartElement(QStringLiteral("Parameters"));
-    for (auto it = dev.parameters().constBegin(); it != dev.parameters().constEnd(); ++it) {
+    for (const auto &[key, val] : dev.parameters()) {
         xml.writeStartElement(QStringLiteral("Param"));
-        xml.writeAttribute(QStringLiteral("id"),    it.key());
-        xml.writeAttribute(QStringLiteral("value"), it.value().toString());
+        xml.writeAttribute(QStringLiteral("id"),    key);
+        xml.writeAttribute(QStringLiteral("value"), val.toString());
         xml.writeEndElement();
     }
     xml.writeEndElement(); // Parameters

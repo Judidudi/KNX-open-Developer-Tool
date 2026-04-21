@@ -38,7 +38,7 @@ QString DptRegistry::decode(const QString &dptId, const QByteArray &apdu)
 
     // DPT 1.x: 1-bit value packed in lower bit of last APCI byte
     if (dptId.startsWith(QLatin1String("1."))) {
-        uint8_t val = static_cast<uint8_t>(apdu.last()) & 0x01;
+        uint8_t val = static_cast<uint8_t>(apdu.back()) & 0x01;
         if (dptId == QStringLiteral("1.001"))
             return val ? QStringLiteral("EIN") : QStringLiteral("AUS");
         if (dptId == QStringLiteral("1.008"))
@@ -48,7 +48,7 @@ QString DptRegistry::decode(const QString &dptId, const QByteArray &apdu)
 
     // DPT 5.x: 1 byte unsigned
     if (dptId.startsWith(QLatin1String("5.")) && apdu.size() >= 1) {
-        uint8_t raw = static_cast<uint8_t>(apdu.last());
+        uint8_t raw = static_cast<uint8_t>(apdu.back());
         if (dptId == QStringLiteral("5.001"))
             return QStringLiteral("%1 %").arg(qRound(raw * 100.0 / 255.0));
         return QString::number(raw);

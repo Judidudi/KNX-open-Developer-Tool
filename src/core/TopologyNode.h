@@ -1,7 +1,7 @@
 #pragma once
 
 #include <QString>
-#include <QList>
+#include <vector>
 #include <memory>
 
 class DeviceInstance;
@@ -41,6 +41,7 @@ private:
     QString      m_name;
     TopologyNode *m_parent = nullptr;
 
-    QList<std::unique_ptr<TopologyNode>>   m_children;
-    QList<std::unique_ptr<DeviceInstance>> m_devices;
+    // std::vector instead of QList: unique_ptr is move-only, QList requires copyable types.
+    std::vector<std::unique_ptr<TopologyNode>>   m_children;
+    std::vector<std::unique_ptr<DeviceInstance>> m_devices;
 };

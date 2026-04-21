@@ -68,7 +68,9 @@ private slots:
         DeviceInstance *dev2 = line2->deviceAt(0);
         QCOMPARE(dev2->physicalAddress(), QStringLiteral("1.1.1"));
         QCOMPARE(dev2->catalogRef(),      QStringLiteral("switch-actuator-1ch"));
-        QCOMPARE(dev2->parameters().value(QStringLiteral("p_startup_delay")).toString(), QStringLiteral("500"));
+        const auto paramIt = dev2->parameters().find(QStringLiteral("p_startup_delay"));
+        QVERIFY(paramIt != dev2->parameters().end());
+        QCOMPARE(paramIt->second.toString(), QStringLiteral("500"));
         QCOMPARE(dev2->links().size(), 1);
         QCOMPARE(dev2->links()[0].comObjectId, QStringLiteral("co_switch_ch1"));
         QCOMPARE(dev2->links()[0].ga.toString(), QStringLiteral("0/0/1"));
