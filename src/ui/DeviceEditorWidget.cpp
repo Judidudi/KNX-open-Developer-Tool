@@ -143,7 +143,7 @@ void DeviceEditorWidget::buildParameterTab()
         m_paramLayout->addRow(p.name.get() + QStringLiteral(":"), editor);
     }
 
-    if (m->parameters.isEmpty())
+    if (m->parameters.empty())
         m_paramLayout->addRow(new QLabel(tr("Dieses Gerät hat keine Parameter."), m_paramTab));
 
     m_updating = false;

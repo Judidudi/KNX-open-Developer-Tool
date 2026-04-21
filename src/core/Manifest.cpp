@@ -134,7 +134,7 @@ std::optional<Manifest> loadManifest(const QString &filePath)
             if (p["memoryOffset"]) param.memoryOffset = p["memoryOffset"].as<uint32_t>();
             else                   param.memoryOffset = autoOffset;
             autoOffset = param.memoryOffset + param.effectiveSize();
-            m.parameters.append(param);
+            m.parameters.push_back(param);
         }
     }
 
@@ -152,7 +152,7 @@ std::optional<Manifest> loadManifest(const QString &filePath)
     }
 
     // Auto-compute parameterSize if not specified: last offset + size
-    if (m.memoryLayout.parameterSize == 0 && !m.parameters.isEmpty()) {
+    if (m.memoryLayout.parameterSize == 0 && !m.parameters.empty()) {
         uint32_t end = 0;
         for (const auto &p : m.parameters)
             end = std::max(end, p.memoryOffset + p.effectiveSize());

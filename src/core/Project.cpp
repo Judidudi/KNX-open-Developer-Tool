@@ -9,7 +9,7 @@ Project::~Project() = default;
 
 void Project::addArea(std::unique_ptr<TopologyNode> area)
 {
-    m_areas.append(std::move(area));
+    m_areas.push_back(std::move(area));
 }
 
 TopologyNode *Project::areaAt(int index)

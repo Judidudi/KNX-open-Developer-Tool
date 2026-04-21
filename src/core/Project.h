@@ -4,6 +4,7 @@
 #include <QString>
 #include <QList>
 #include <QDate>
+#include <vector>
 #include <memory>
 
 class TopologyNode;
@@ -35,6 +36,6 @@ private:
     QString      m_name;
     QDate        m_created;
 
-    QList<std::unique_ptr<TopologyNode>> m_areas;
+    std::vector<std::unique_ptr<TopologyNode>> m_areas;
     QList<GroupAddress>                  m_groupAddresses;
 };
