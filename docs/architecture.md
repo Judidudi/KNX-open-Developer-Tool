@@ -3,46 +3,74 @@
 ## Overview
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  KNX open Developer Tool (Qt6/C++)                                   │
-│                                                                      │
-│  app/main.cpp                                                        │
-│       │                                                              │
-│  src/ui/MainWindow ──────────────────────────────────────────────┐   │
-│       ├── ProjectTreeWidget  (QAbstractItemModel over Project)    │   │
-│       ├── CatalogWidget      (loads DeviceCatalog, YAML manifests)│   │
-│       ├── DeviceEditorWidget (Parameter + ComObject tabs)         │   │
-│       ├── BusMonitorWidget   (live telegram log, QAbstractTableModel)│ │
-│       └── ProgramDialog      (step-by-step download, state machine)│  │
-│                                                              │       │
-│  src/core/  ──────────────────────────────────────────────── │       │
-│       Project                                                │       │
-│       ├── TopologyNode  (Area → Line → DeviceInstance)       │       │
-│       ├── GroupAddress  (3-level: main/middle/sub, DPT)      │       │
-│       ├── DeviceInstance → Manifest                          │       │
-│       ├── DeviceCatalog (scans catalog/, loads YAML)         │       │
-│       └── ProjectXmlSerializer (*.kodtproj read/write)       │       │
-│                                                              │       │
-│  src/knxip/ ──────────────────────────────────────────────── │       │
-│       IKnxInterface (abstract)                               │       │
-│       ├── KnxIpTunnelingClient  (UDP KNXnet/IP tunneling)    │       │
-│       ├── KnxIpDiscovery        (SEARCH_REQUEST multicast)   │       │
-│       ├── CemiFrame             (encode/decode L_Data)       │       │
-│       ├── TableBuilder          (address/assoc/param blocks) │       │
-│       ├── DeviceProgrammer      (KNX programming state machine)│     │
-│       └── InterfaceManager      (owns active IKnxInterface)  │       │
-│                                                              │       │
-│  src/usb/ ────────────────────────────────────────────────── │       │
-│       UsbKnxInterface  (IKnxInterface via Serial/HID)        │       │
-│       └── ConnectInterfaceFactory (creates the right impl.)  │       │
-└──────────────────────────────────────────────────────────────┴───────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│  KNX open Developer Tool (Qt6/C++)                                     │
+│                                                                        │
+│  app/main.cpp  (QApplication + global stylesheet)                      │
+│       │                                                                │
+│  src/ui/MainWindow ──────────────────────────────────────────────────┐ │
+│       ├── ProjectTreeWidget  (3-tab navigation panel, left)          │ │
+│       │     ├── Tab "Topologie"  – QTreeView (Areas/Lines/Devices)   │ │
+│       │     ├── Tab "Gruppen"    – QTreeView (Main/Mid/GroupAddress)  │ │
+│       │     └── Tab "Katalog"    – CatalogWidget (YAML manifests)    │ │
+│       ├── QStackedWidget  (center)                                    │ │
+│       │     ├── DeviceEditorWidget (Parameter + ComObject tabs)      │ │
+│       │     └── BusMonitorWidget  (live telegram log, table model)   │ │
+│       ├── PropertiesPanel  (QDockWidget, right)                      │ │
+│       │     ├── Device view  – phys. address editor                  │ │
+│       │     └── GroupAddress view – name + DPT editor                │ │
+│       └── ProgramDialog  (step-by-step download, state machine)      │ │
+│                                                                 │    │ │
+│  src/core/  ────────────────────────────────────────────────── │    │ │
+│       Project                                                   │    │ │
+│       ├── TopologyNode  (Area → Line → DeviceInstance)          │    │ │
+│       ├── GroupAddress  (3-level: main/middle/sub, DPT)         │    │ │
+│       ├── DeviceInstance → Manifest                             │    │ │
+│       ├── DeviceCatalog (scans catalog/, loads YAML)            │    │ │
+│       └── ProjectXmlSerializer (*.kodtproj read/write)          │    │ │
+│                                                                 │    │ │
+│  src/knxip/ ────────────────────────────────────────────────── │    │ │
+│       IKnxInterface (abstract)                                  │    │ │
+│       ├── KnxIpTunnelingClient  (UDP KNXnet/IP tunneling)       │    │ │
+│       ├── KnxIpDiscovery        (SEARCH_REQUEST multicast)      │    │ │
+│       ├── CemiFrame             (encode/decode L_Data)          │    │ │
+│       ├── TableBuilder          (address/assoc/param blocks)    │    │ │
+│       ├── DeviceProgrammer      (KNX programming state machine) │    │ │
+│       └── InterfaceManager      (owns active IKnxInterface)     │    │ │
+│                                                                 │    │ │
+│  src/usb/ ─────────────────────────────────────────────────── │    │ │
+│       UsbKnxInterface  (IKnxInterface via Serial/HID)           │    │ │
+│       └── ConnectInterfaceFactory (creates the right impl.)     │    │ │
+└─────────────────────────────────────────────────────────────────┴────┴─┘
                               │
                KNXnet/IP (UDP/TCP)  or  USB (Serial CDC / HID)
                               │
              ┌────────────────┴──────────────────┐
-             │  KNX TP Bus                       │
+             │  KNX TP Bus                        │
              │    STM32 Device (OpenKNX firmware) │
-             └───────────────────────────────────┘
+             └────────────────────────────────────┘
+```
+
+## UI Layout
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Datei | Projekt | Bus | Hilfe                   [Toolbar]               │
+├───────────────────┬──────────────────────────────┬───────────────────────┤
+│ [Topologie|Gruppen│                              │ Eigenschaften         │
+│  |Katalog]        │  Center (gestapelt)          │ ──────────────────    │
+│                   │                              │ Gerät / Gruppenadresse│
+│  ▼ Bereich 1      │  A: Parameter-Editor         │ Typ: switch-actuator  │
+│    ▼ Linie 1.1    │     oder                     │ Phys. Adresse: [1.1.1]│
+│      Gerät 1.1.1  │  B: Busmonitor-Tabelle       │                       │
+│                   │                              │ ─ oder ─              │
+│ (Gruppen-Tab)     │                              │ Adresse: 0/0/1        │
+│  ▼ 0 Beleuchtung  │                              │ Name: [Wohnzimmer]    │
+│    ▼ 0 EG         │                              │ DPT:  [1.001]         │
+│      0/0/1        │                              │                       │
+├───────────────────┴──────────────────────────────┴───────────────────────┤
+│  ● Verbunden (grün) | Bereit                    [Status-Bar, dunkel]     │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Project File Format (`*.kodtproj`)
@@ -151,7 +179,7 @@ knxodt_knxip  (IKnxInterface, CemiFrame, TableBuilder, DeviceProgrammer, …)
      ▲
 knxodt_usb    (UsbKnxInterface, ConnectInterfaceFactory)
      ▲
-knxodt_ui     (MainWindow, Widgets, Dialogs)
+knxodt_ui     (MainWindow, Widgets, Dialogs, PropertiesPanel)
      ▲
 KNXOpenDeveloperTool  (main.cpp)
 ```
