@@ -105,7 +105,24 @@
 
 <context>
     <name>ProjectTreeWidget</name>
-    <message><source>Projekt-Browser</source><translation type="unfinished"></translation></message>
+    <message><source>Topologie</source><translation type="unfinished"></translation></message>
+    <message><source>Gruppen</source><translation type="unfinished"></translation></message>
+    <message><source>Katalog</source><translation type="unfinished"></translation></message>
+</context>
+
+<context>
+    <name>PropertiesPanel</name>
+    <message><source>Eigenschaften</source><translation type="unfinished"></translation></message>
+    <message><source>Kein Element ausgewählt</source><translation type="unfinished"></translation></message>
+    <message><source>Gerät</source><translation type="unfinished"></translation></message>
+    <message><source>Typ:</source><translation type="unfinished"></translation></message>
+    <message><source>Phys. Adresse:</source><translation type="unfinished"></translation></message>
+    <message><source>z.B. 1.1.1</source><translation type="unfinished"></translation></message>
+    <message><source>Gruppenadresse</source><translation type="unfinished"></translation></message>
+    <message><source>Adresse:</source><translation type="unfinished"></translation></message>
+    <message><source>Name:</source><translation type="unfinished"></translation></message>
+    <message><source>DPT:</source><translation type="unfinished"></translation></message>
+    <message><source>z.B. 1.001</source><translation type="unfinished"></translation></message>
 </context>
 
 <context>

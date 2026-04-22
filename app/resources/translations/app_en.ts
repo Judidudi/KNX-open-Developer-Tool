@@ -108,7 +108,24 @@
 
 <context>
     <name>ProjectTreeWidget</name>
-    <message><source>Projekt-Browser</source><translation>Project Browser</translation></message>
+    <message><source>Topologie</source><translation>Topology</translation></message>
+    <message><source>Gruppen</source><translation>Group Addresses</translation></message>
+    <message><source>Katalog</source><translation>Catalog</translation></message>
+</context>
+
+<context>
+    <name>PropertiesPanel</name>
+    <message><source>Eigenschaften</source><translation>Properties</translation></message>
+    <message><source>Kein Element ausgewählt</source><translation>No item selected</translation></message>
+    <message><source>Gerät</source><translation>Device</translation></message>
+    <message><source>Typ:</source><translation>Type:</translation></message>
+    <message><source>Phys. Adresse:</source><translation>Phys. address:</translation></message>
+    <message><source>z.B. 1.1.1</source><translation>e.g. 1.1.1</translation></message>
+    <message><source>Gruppenadresse</source><translation>Group Address</translation></message>
+    <message><source>Adresse:</source><translation>Address:</translation></message>
+    <message><source>Name:</source><translation>Name:</translation></message>
+    <message><source>DPT:</source><translation>DPT:</translation></message>
+    <message><source>z.B. 1.001</source><translation>e.g. 1.001</translation></message>
 </context>
 
 <context>
