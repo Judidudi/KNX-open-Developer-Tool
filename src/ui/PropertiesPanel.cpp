@@ -112,7 +112,7 @@ void PropertiesPanel::showDevice(DeviceInstance *device)
         return;
     }
     m_updating = true;
-    m_devTypeLabel->setText(device->catalogRef());
+    m_devTypeLabel->setText(device->productRefId());
     m_devPhysEdit->setText(device->physicalAddress());
     m_updating = false;
     m_stack->setCurrentIndex(1);

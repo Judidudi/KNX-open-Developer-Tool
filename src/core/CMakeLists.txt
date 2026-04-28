@@ -15,8 +15,8 @@ add_library(knxodt_core STATIC
     DptRegistry.cpp
     Project.h
     Project.cpp
-    ProjectXmlSerializer.h
-    ProjectXmlSerializer.cpp
+    KnxprojSerializer.h
+    KnxprojSerializer.cpp
 )
 
 target_include_directories(knxodt_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

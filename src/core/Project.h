@@ -21,6 +21,10 @@ public:
     void setName(const QString &name) { m_name = name; }
     void setCreated(const QDate &d)   { m_created = d; }
 
+    // Stable KNX project ID (P-XXXXXXXX) preserved across save/load
+    QString knxprojId()                   const { return m_knxprojId; }
+    void    setKnxprojId(const QString &id)      { m_knxprojId = id;  }
+
     // Topology: list of areas (top-level nodes)
     void         addArea(std::unique_ptr<TopologyNode> area);
     TopologyNode *areaAt(int index);
@@ -35,6 +39,7 @@ public:
 private:
     QString      m_name;
     QDate        m_created;
+    QString      m_knxprojId;
 
     std::vector<std::unique_ptr<TopologyNode>> m_areas;
     QList<GroupAddress>                  m_groupAddresses;

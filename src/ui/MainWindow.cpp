@@ -14,7 +14,7 @@
 #include "DeviceInstance.h"
 #include "DeviceCatalog.h"
 #include "Manifest.h"
-#include "ProjectXmlSerializer.h"
+#include "KnxprojSerializer.h"
 #include "GroupAddress.h"
 
 #include "InterfaceManager.h"
@@ -256,11 +256,11 @@ void MainWindow::openProject()
 
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Projekt öffnen"), QString(),
-        tr("KNX open Developer Tool Projekte (*.kodtproj);;Alle Dateien (*)"));
+        tr("KNX Projekte (*.knxproj);;Alle Dateien (*)"));
     if (path.isEmpty())
         return;
 
-    auto loaded = ProjectXmlSerializer::load(path);
+    auto loaded = KnxprojSerializer::load(path);
     if (!loaded) {
         QMessageBox::critical(this, tr("Fehler"),
             tr("Projekt konnte nicht geöffnet werden:\n%1").arg(path));
@@ -284,7 +284,7 @@ void MainWindow::saveProject()
         saveProjectAs();
         return;
     }
-    if (!ProjectXmlSerializer::save(*m_project, m_currentFilePath)) {
+    if (!KnxprojSerializer::save(*m_project, m_currentFilePath)) {
         QMessageBox::critical(this, tr("Fehler"),
             tr("Projekt konnte nicht gespeichert werden:\n%1").arg(m_currentFilePath));
         return;
@@ -298,7 +298,7 @@ void MainWindow::saveProjectAs()
 {
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Projekt speichern unter"), QString(),
-        tr("KNX open Developer Tool Projekte (*.kodtproj);;Alle Dateien (*)"));
+        tr("KNX Projekte (*.knxproj);;Alle Dateien (*)"));
     if (path.isEmpty())
         return;
     m_currentFilePath = path;
@@ -369,7 +369,7 @@ void MainWindow::onDeviceSelected(DeviceInstance *device)
     }
 
     if (!device->manifest())
-        device->setManifest(m_catalog->sharedById(device->catalogRef()));
+        device->setManifest(m_catalog->sharedById(device->productRefId()));
 
     m_deviceEditor->setDevice(device, m_project.get());
     m_centerStack->setCurrentWidget(m_deviceEditor);
@@ -437,10 +437,10 @@ void MainWindow::onProgramClicked()
         return;
     }
     if (!m_selectedDevice->manifest())
-        m_selectedDevice->setManifest(m_catalog->sharedById(m_selectedDevice->catalogRef()));
+        m_selectedDevice->setManifest(m_catalog->sharedById(m_selectedDevice->productRefId()));
     if (!m_selectedDevice->manifest()) {
         QMessageBox::critical(this, tr("Manifest fehlt"),
-            tr("Für das Gerät %1 wurde kein Manifest gefunden.").arg(m_selectedDevice->catalogRef()));
+            tr("Für das Gerät %1 wurde kein Manifest gefunden.").arg(m_selectedDevice->productRefId()));
         return;
     }
 

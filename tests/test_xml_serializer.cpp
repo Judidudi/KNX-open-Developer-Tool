@@ -3,9 +3,9 @@
 #include "Project.h"
 #include "TopologyNode.h"
 #include "DeviceInstance.h"
-#include "ProjectXmlSerializer.h"
+#include "KnxprojSerializer.h"
 
-class TestXmlSerializer : public QObject
+class TestKnxprojSerializer : public QObject
 {
     Q_OBJECT
 
@@ -40,21 +40,23 @@ private slots:
 
         orig.addGroupAddress(GroupAddress(0, 0, 1, QStringLiteral("Wohnzimmer Licht"), QStringLiteral("1.001")));
 
-        // Save
+        // Save to .knxproj
         QTemporaryFile tmp;
-        tmp.setFileTemplate(QStringLiteral("project-XXXXXX.kodtproj"));
+        tmp.setFileTemplate(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                            + QStringLiteral("/project-XXXXXX.knxproj"));
         QVERIFY(tmp.open());
         const QString path = tmp.fileName();
-        tmp.close(); // allow serializer to reopen
+        tmp.close();
 
-        QVERIFY(ProjectXmlSerializer::save(orig, path));
+        QVERIFY(KnxprojSerializer::save(orig, path));
+        QVERIFY(!orig.knxprojId().isEmpty()); // ID was generated
 
         // Load
-        auto loaded = ProjectXmlSerializer::load(path);
+        auto loaded = KnxprojSerializer::load(path);
         QVERIFY(loaded != nullptr);
 
         QCOMPARE(loaded->name(), QStringLiteral("TestProjekt"));
-        QCOMPARE(loaded->created(), QDate(2026, 4, 20));
+        QCOMPARE(loaded->knxprojId(), orig.knxprojId()); // ID preserved
         QCOMPARE(loaded->areaCount(), 1);
 
         TopologyNode *area2 = loaded->areaAt(0);
@@ -67,10 +69,13 @@ private slots:
 
         DeviceInstance *dev2 = line2->deviceAt(0);
         QCOMPARE(dev2->physicalAddress(), QStringLiteral("1.1.1"));
-        QCOMPARE(dev2->catalogRef(),      QStringLiteral("switch-actuator-1ch"));
+        QCOMPARE(dev2->productRefId(),    QStringLiteral("switch-actuator-1ch"));
+        QCOMPARE(dev2->appProgramRefId(), QStringLiteral("1.0.0"));
+
         const auto paramIt = dev2->parameters().find(QStringLiteral("p_startup_delay"));
         QVERIFY(paramIt != dev2->parameters().end());
         QCOMPARE(paramIt->second.toString(), QStringLiteral("500"));
+
         QCOMPARE(dev2->links().size(), 1);
         QCOMPARE(dev2->links()[0].comObjectId, QStringLiteral("co_switch_ch1"));
         QCOMPARE(dev2->links()[0].ga.toString(), QStringLiteral("0/0/1"));
@@ -82,7 +87,7 @@ private slots:
 
     void loadNonexistentFile()
     {
-        auto result = ProjectXmlSerializer::load(QStringLiteral("/does/not/exist.kodtproj"));
+        auto result = KnxprojSerializer::load(QStringLiteral("/does/not/exist.knxproj"));
         QVERIFY(result == nullptr);
     }
 
@@ -92,19 +97,41 @@ private slots:
         empty.setName(QStringLiteral("Leer"));
 
         QTemporaryFile tmp;
-        tmp.setFileTemplate(QStringLiteral("project-XXXXXX.kodtproj"));
+        tmp.setFileTemplate(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                            + QStringLiteral("/project-XXXXXX.knxproj"));
         QVERIFY(tmp.open());
         const QString path = tmp.fileName();
         tmp.close();
 
-        QVERIFY(ProjectXmlSerializer::save(empty, path));
-        auto loaded = ProjectXmlSerializer::load(path);
+        QVERIFY(KnxprojSerializer::save(empty, path));
+        auto loaded = KnxprojSerializer::load(path);
         QVERIFY(loaded != nullptr);
         QCOMPARE(loaded->name(), QStringLiteral("Leer"));
         QCOMPARE(loaded->areaCount(), 0);
         QVERIFY(loaded->groupAddresses().isEmpty());
     }
+
+    void idStability()
+    {
+        // Saving twice should preserve the same project ID
+        Project proj;
+        proj.setName(QStringLiteral("IdTest"));
+
+        QTemporaryFile tmp;
+        tmp.setFileTemplate(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                            + QStringLiteral("/project-XXXXXX.knxproj"));
+        QVERIFY(tmp.open());
+        const QString path = tmp.fileName();
+        tmp.close();
+
+        QVERIFY(KnxprojSerializer::save(proj, path));
+        const QString id1 = proj.knxprojId();
+        QVERIFY(!id1.isEmpty());
+
+        QVERIFY(KnxprojSerializer::save(proj, path));
+        QCOMPARE(proj.knxprojId(), id1); // same ID on second save
+    }
 };
 
-QTEST_MAIN(TestXmlSerializer)
+QTEST_MAIN(TestKnxprojSerializer)
 #include "test_xml_serializer.moc"

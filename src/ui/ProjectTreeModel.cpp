@@ -79,9 +79,9 @@ void ProjectTreeModel::rebuild()
                 auto devNode = std::make_unique<Node>();
                 devNode->kind    = Device;
                 devNode->label   = dev->physicalAddress().isEmpty()
-                                       ? tr("(neu) %1").arg(dev->catalogRef())
-                                       : tr("%1 – %2").arg(dev->physicalAddress(), dev->catalogRef());
-                devNode->details = dev->catalogRef();
+                                       ? tr("(neu) %1").arg(dev->productRefId())
+                                       : tr("%1 – %2").arg(dev->physicalAddress(), dev->productRefId());
+                devNode->details = dev->productRefId();
                 devNode->rawPtr  = dev;
                 ln->addChild(std::move(devNode));
             }

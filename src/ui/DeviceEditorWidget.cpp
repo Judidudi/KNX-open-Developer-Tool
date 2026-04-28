@@ -65,13 +65,13 @@ void DeviceEditorWidget::setDevice(DeviceInstance *device, Project *project)
     clearTabs();
 
     if (!m_device || !m_device->manifest()) {
-        m_title->setText(tr("Manifest nicht gefunden: %1").arg(m_device ? m_device->catalogRef() : QString()));
+        m_title->setText(tr("Manifest nicht gefunden: %1").arg(m_device ? m_device->productRefId() : QString()));
         return;
     }
 
     const Manifest *m = m_device->manifest();
     m_title->setText(tr("%1 – %2 (%3)")
-                         .arg(m_device->physicalAddress(), m->name.get(), m_device->catalogRef()));
+                         .arg(m_device->physicalAddress(), m->name.get(), m_device->productRefId()));
 
     buildParameterTab();
     buildComObjectTab();

@@ -1,11 +1,11 @@
 #include "DeviceInstance.h"
 
 DeviceInstance::DeviceInstance(const QString &id,
-                               const QString &catalogRef,
-                               const QString &manifestVersion)
+                               const QString &productRefId,
+                               const QString &appProgramRefId)
     : m_id(id)
-    , m_catalogRef(catalogRef)
-    , m_manifestVersion(manifestVersion)
+    , m_productRefId(productRefId)
+    , m_appProgramRefId(appProgramRefId)
 {}
 
 void DeviceInstance::addLink(ComObjectLink link)
