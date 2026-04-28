@@ -7,7 +7,7 @@
 
 class IKnxInterface;
 class DeviceInstance;
-struct Manifest;
+class KnxApplicationProgram;
 class QTimer;
 
 // Runs the classic KNX programming sequence for a single device:
@@ -37,9 +37,9 @@ public:
     };
     Q_ENUM(Step)
 
-    DeviceProgrammer(IKnxInterface *iface,
-                     DeviceInstance *device,
-                     const Manifest *manifest,
+    DeviceProgrammer(IKnxInterface          *iface,
+                     DeviceInstance         *device,
+                     const KnxApplicationProgram *appProgram,
                      QObject *parent = nullptr);
 
     // Starts the programming sequence. Non-blocking; result delivered via signals.
@@ -60,10 +60,10 @@ private slots:
 private:
     void sendAndAdvance(const QByteArray &frame, int delayMs = 400);
 
-    IKnxInterface  *m_iface    = nullptr;
-    DeviceInstance *m_device   = nullptr;
-    const Manifest *m_manifest = nullptr;
-    QTimer         *m_timer    = nullptr;
+    IKnxInterface              *m_iface      = nullptr;
+    DeviceInstance             *m_device     = nullptr;
+    const KnxApplicationProgram *m_appProgram = nullptr;
+    QTimer                     *m_timer      = nullptr;
 
     int   m_step    = StepWaitProgMode;
     bool  m_running = false;

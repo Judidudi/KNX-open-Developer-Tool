@@ -4,10 +4,10 @@
 #include <memory>
 
 class Project;
-class DeviceCatalog;
+class KnxprodCatalog;
+class KnxApplicationProgram;
 class DeviceInstance;
 class GroupAddress;
-struct Manifest;
 
 class InterfaceManager;
 class ProjectTreeWidget;
@@ -36,7 +36,9 @@ private slots:
     void saveProject();
     void saveProjectAs();
     void addGroupAddress();
-    void onAddDeviceRequested(std::shared_ptr<Manifest> manifest);
+    void onAddDeviceRequested(const QString &productId,
+                              const QString &productName,
+                              std::shared_ptr<KnxApplicationProgram> appProgram);
     void onDeviceSelected(DeviceInstance *device);
     void onGroupAddressSelected(GroupAddress *ga);
     void onConnectClicked();
@@ -59,13 +61,13 @@ private:
     void updateConnectionUi();
 
     std::unique_ptr<Project>          m_project;
-    std::unique_ptr<DeviceCatalog>    m_catalog;
+    std::unique_ptr<KnxprodCatalog>   m_catalog;
     std::unique_ptr<InterfaceManager> m_interfaces;
 
-    ProjectTreeWidget  *m_projectTree  = nullptr;
-    DeviceEditorWidget *m_deviceEditor = nullptr;
-    BusMonitorWidget   *m_busMonitor   = nullptr;
-    QStackedWidget     *m_centerStack  = nullptr;
+    ProjectTreeWidget  *m_projectTree     = nullptr;
+    DeviceEditorWidget *m_deviceEditor    = nullptr;
+    BusMonitorWidget   *m_busMonitor      = nullptr;
+    QStackedWidget     *m_centerStack     = nullptr;
     PropertiesPanel    *m_propertiesPanel = nullptr;
 
     QLabel  *m_connectionStatusLabel = nullptr;
@@ -74,11 +76,11 @@ private:
 
     DeviceInstance *m_selectedDevice = nullptr;
 
-    QAction *m_actSave          = nullptr;
-    QAction *m_actSaveAs        = nullptr;
-    QAction *m_actConnect       = nullptr;
-    QAction *m_actDisconnect    = nullptr;
-    QAction *m_actProgram       = nullptr;
-    QAction *m_actBusMonitor    = nullptr;
-    QAction *m_actAddGroupAddr  = nullptr;
+    QAction *m_actSave         = nullptr;
+    QAction *m_actSaveAs       = nullptr;
+    QAction *m_actConnect      = nullptr;
+    QAction *m_actDisconnect   = nullptr;
+    QAction *m_actProgram      = nullptr;
+    QAction *m_actBusMonitor   = nullptr;
+    QAction *m_actAddGroupAddr = nullptr;
 };

@@ -1,8 +1,7 @@
 #pragma once
 
-#include "../core/Manifest.h"
+#include "../core/KnxApplicationProgram.h"
 #include <QByteArray>
-#include <QList>
 #include <cstdint>
 
 class DeviceInstance;
@@ -11,7 +10,7 @@ class DeviceInstance;
 // written to the device via A_Memory_Write during programming:
 //   • addressTable       – device PA followed by used GA list
 //   • associationTable   – entries mapping ComObject index → GA table index
-//   • parameterBlock     – packed parameter values (byte-exact per manifest)
+//   • parameterBlock     – packed parameter values (byte-exact per app program)
 //
 // Layout conventions (matched by the firmware stack in Repo B):
 //   addressTable:     [count_hi][count_lo] [PA_hi][PA_lo] [GA1_hi][GA1_lo] ...
@@ -27,6 +26,6 @@ struct DeviceMemoryImage
 class TableBuilder
 {
 public:
-    static DeviceMemoryImage build(const DeviceInstance &device,
-                                   const Manifest       &manifest);
+    static DeviceMemoryImage build(const DeviceInstance          &device,
+                                   const KnxApplicationProgram   &appProgram);
 };

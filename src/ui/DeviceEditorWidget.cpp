@@ -2,7 +2,7 @@
 
 #include "Project.h"
 #include "DeviceInstance.h"
-#include "Manifest.h"
+#include "KnxApplicationProgram.h"
 #include "GroupAddress.h"
 #include "ComObjectLink.h"
 
@@ -64,14 +64,14 @@ void DeviceEditorWidget::setDevice(DeviceInstance *device, Project *project)
     m_project = project;
     clearTabs();
 
-    if (!m_device || !m_device->manifest()) {
-        m_title->setText(tr("Manifest nicht gefunden: %1").arg(m_device ? m_device->productRefId() : QString()));
+    if (!m_device || !m_device->appProgram()) {
+        m_title->setText(tr("Anwendungsprogramm nicht gefunden: %1").arg(m_device ? m_device->productRefId() : QString()));
         return;
     }
 
-    const Manifest *m = m_device->manifest();
+    const KnxApplicationProgram *app = m_device->appProgram();
     m_title->setText(tr("%1 – %2 (%3)")
-                         .arg(m_device->physicalAddress(), m->name.get(), m_device->productRefId()));
+                         .arg(m_device->physicalAddress(), app->name, m_device->productRefId()));
 
     buildParameterTab();
     buildComObjectTab();
@@ -96,24 +96,25 @@ void DeviceEditorWidget::clearTabs()
 void DeviceEditorWidget::buildParameterTab()
 {
     m_updating = true;
-    const Manifest *m = m_device->manifest();
+    const KnxApplicationProgram *app = m_device->appProgram();
 
-    for (const ManifestParameter &p : m->parameters) {
+    for (const KnxParameter &p : app->parameters) {
         auto paramIt = m_device->parameters().find(p.id);
         const QVariant currentValue = (paramIt != m_device->parameters().end()) ? paramIt->second : p.defaultValue;
+        const KnxParameterType *pt = app->findType(p.typeId);
         QWidget *editor = nullptr;
 
-        if (p.type == QLatin1String("bool")) {
+        if (pt && pt->kind == KnxParameterType::Kind::Bool) {
             auto *cb = new QCheckBox(m_paramTab);
             cb->setChecked(currentValue.toInt() != 0);
             connect(cb, &QCheckBox::toggled, this, &DeviceEditorWidget::onParameterChanged);
             editor = cb;
-        } else if (p.type == QLatin1String("enum")) {
+        } else if (pt && pt->kind == KnxParameterType::Kind::Enum) {
             auto *combo = new QComboBox(m_paramTab);
             int selectedIdx = 0;
-            for (int i = 0; i < p.enumValues.size(); ++i) {
-                const auto &ev = p.enumValues[i];
-                combo->addItem(ev.label.get(), ev.value);
+            for (int i = 0; i < pt->enumValues.size(); ++i) {
+                const auto &ev = pt->enumValues[i];
+                combo->addItem(ev.text, ev.value);
                 if (ev.value == currentValue.toInt())
                     selectedIdx = i;
             }
@@ -121,18 +122,12 @@ void DeviceEditorWidget::buildParameterTab()
             connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                     this, &DeviceEditorWidget::onParameterChanged);
             editor = combo;
-        } else { // uint8/uint16/uint32 – default numeric editor
+        } else {
             auto *spin = new QSpinBox(m_paramTab);
-            const int minV = p.rangeMin.isValid() ? p.rangeMin.toInt() : 0;
-            int maxV = 65535;
-            if (p.rangeMax.isValid())               maxV = p.rangeMax.toInt();
-            else if (p.type == QLatin1String("uint8"))  maxV = 255;
-            else if (p.type == QLatin1String("uint16")) maxV = 65535;
-            else if (p.type == QLatin1String("uint32")) maxV = 2147483647;
+            const int minV = pt ? pt->minValue : 0;
+            const int maxV = pt ? pt->maxValue : 65535;
             spin->setRange(minV, maxV);
             spin->setValue(currentValue.toInt());
-            if (!p.unit.isEmpty())
-                spin->setSuffix(QStringLiteral(" %1").arg(p.unit));
             connect(spin, QOverload<int>::of(&QSpinBox::valueChanged),
                     this, &DeviceEditorWidget::onParameterChanged);
             editor = spin;
@@ -140,10 +135,10 @@ void DeviceEditorWidget::buildParameterTab()
 
         editor->setProperty("paramId", p.id);
         m_paramWidgets.insert(p.id, editor);
-        m_paramLayout->addRow(p.name.get() + QStringLiteral(":"), editor);
+        m_paramLayout->addRow(p.name + QStringLiteral(":"), editor);
     }
 
-    if (m->parameters.empty())
+    if (app->parameters.isEmpty())
         m_paramLayout->addRow(new QLabel(tr("Dieses Gerät hat keine Parameter."), m_paramTab));
 
     m_updating = false;
@@ -152,14 +147,14 @@ void DeviceEditorWidget::buildParameterTab()
 void DeviceEditorWidget::buildComObjectTab()
 {
     m_updating = true;
-    const Manifest *m = m_device->manifest();
+    const KnxApplicationProgram *app = m_device->appProgram();
 
-    m_comObjTable->setRowCount(m->comObjects.size());
+    m_comObjTable->setRowCount(app->comObjects.size());
 
-    for (int row = 0; row < m->comObjects.size(); ++row) {
-        const ManifestComObject &co = m->comObjects[row];
+    for (int row = 0; row < app->comObjects.size(); ++row) {
+        const KnxComObject &co = app->comObjects[row];
 
-        m_comObjTable->setItem(row, 0, new QTableWidgetItem(co.name.get()));
+        m_comObjTable->setItem(row, 0, new QTableWidgetItem(co.name));
         m_comObjTable->setItem(row, 1, new QTableWidgetItem(co.dpt));
         m_comObjTable->setItem(row, 2, new QTableWidgetItem(co.flags.join(QString())));
 
@@ -224,12 +219,12 @@ void DeviceEditorWidget::onParameterChanged()
 
 void DeviceEditorWidget::onComObjectLinkChanged(int row)
 {
-    if (m_updating || !m_device || !m_device->manifest())
+    if (m_updating || !m_device || !m_device->appProgram())
         return;
-    if (row < 0 || row >= m_device->manifest()->comObjects.size())
+    if (row < 0 || row >= m_device->appProgram()->comObjects.size())
         return;
 
-    const QString comObjectId = m_device->manifest()->comObjects[row].id;
+    const QString comObjectId = m_device->appProgram()->comObjects[row].id;
     auto *combo = qobject_cast<QComboBox *>(m_comObjTable->cellWidget(row, 3));
     if (!combo)
         return;

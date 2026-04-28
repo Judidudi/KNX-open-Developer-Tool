@@ -6,7 +6,7 @@
 
 class Project;
 class DeviceInstance;
-struct Manifest;
+class KnxApplicationProgram;
 
 class QTabWidget;
 class QFormLayout;

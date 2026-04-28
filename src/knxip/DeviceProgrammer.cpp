@@ -4,18 +4,18 @@
 #include "CemiFrame.h"
 #include "TableBuilder.h"
 #include "../core/DeviceInstance.h"
-#include "../core/Manifest.h"
+#include "../core/KnxApplicationProgram.h"
 
 #include <QTimer>
 
 DeviceProgrammer::DeviceProgrammer(IKnxInterface *iface,
                                    DeviceInstance *device,
-                                   const Manifest *manifest,
+                                   const KnxApplicationProgram *appProgram,
                                    QObject *parent)
     : QObject(parent)
     , m_iface(iface)
     , m_device(device)
-    , m_manifest(manifest)
+    , m_appProgram(appProgram)
     , m_timer(new QTimer(this))
 {
     m_timer->setSingleShot(true);
@@ -40,7 +40,7 @@ void DeviceProgrammer::start()
 {
     if (m_running)
         return;
-    if (!m_iface || !m_device || !m_manifest) {
+    if (!m_iface || !m_device || !m_appProgram) {
         emit finished(false, tr("Ungültiger Programmer-Zustand"));
         return;
     }
@@ -52,7 +52,6 @@ void DeviceProgrammer::start()
     m_step    = StepWaitProgMode;
     emit stepStarted(m_step,
                      tr("Bitte Programmiertaster am Gerät drücken (Prog-LED muss leuchten)."));
-    // Give user 5 s to press the prog button before we start writing
     m_timer->start(5000);
 }
 
@@ -79,7 +78,7 @@ void DeviceProgrammer::runNextStep()
         return;
 
     const uint16_t newPa = CemiFrame::physAddrFromString(m_device->physicalAddress());
-    const DeviceMemoryImage img = TableBuilder::build(*m_device, *m_manifest);
+    const DeviceMemoryImage img = TableBuilder::build(*m_device, *m_appProgram);
 
     switch (m_step) {
     case StepWaitProgMode: {
@@ -91,19 +90,19 @@ void DeviceProgrammer::runNextStep()
     case StepWriteAddressTable: {
         emit stepStarted(m_step, stepLabel(static_cast<Step>(m_step)));
         sendAndAdvance(CemiFrame::buildMemoryWrite(
-            newPa, m_manifest->memoryLayout.addressTable, img.addressTable));
+            newPa, m_appProgram->memoryLayout.addressTable, img.addressTable));
         break;
     }
     case StepWriteAssociationTable: {
         emit stepStarted(m_step, stepLabel(static_cast<Step>(m_step)));
         sendAndAdvance(CemiFrame::buildMemoryWrite(
-            newPa, m_manifest->memoryLayout.associationTable, img.associationTable));
+            newPa, m_appProgram->memoryLayout.associationTable, img.associationTable));
         break;
     }
     case StepWriteParameters: {
         emit stepStarted(m_step, stepLabel(static_cast<Step>(m_step)));
         sendAndAdvance(CemiFrame::buildMemoryWrite(
-            newPa, m_manifest->memoryLayout.parameterBase, img.parameterBlock));
+            newPa, m_appProgram->memoryLayout.parameterBase, img.parameterBlock));
         break;
     }
     case StepRestart: {

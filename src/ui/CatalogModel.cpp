@@ -1,7 +1,6 @@
 #include "CatalogModel.h"
 
-#include "DeviceCatalog.h"
-#include "Manifest.h"
+#include "KnxprodCatalog.h"
 
 CatalogModel::CatalogModel(QObject *parent)
     : QAbstractListModel(parent)
@@ -9,7 +8,7 @@ CatalogModel::CatalogModel(QObject *parent)
 
 CatalogModel::~CatalogModel() = default;
 
-void CatalogModel::setCatalog(DeviceCatalog *catalog)
+void CatalogModel::setCatalog(KnxprodCatalog *catalog)
 {
     beginResetModel();
     m_catalog = catalog;
@@ -24,12 +23,11 @@ void CatalogModel::reload()
     endResetModel();
 }
 
-std::shared_ptr<Manifest> CatalogModel::manifestAt(const QModelIndex &index) const
+const KnxHardwareProduct *CatalogModel::productAt(const QModelIndex &index) const
 {
     if (!m_catalog || !index.isValid())
         return nullptr;
-    const Manifest *m = m_catalog->at(index.row());
-    return m ? m_catalog->sharedById(m->id) : nullptr;
+    return m_catalog->at(index.row());
 }
 
 int CatalogModel::rowCount(const QModelIndex &parent) const
@@ -43,21 +41,21 @@ QVariant CatalogModel::data(const QModelIndex &index, int role) const
 {
     if (!m_catalog || !index.isValid())
         return {};
-    const Manifest *m = m_catalog->at(index.row());
-    if (!m)
+    const KnxHardwareProduct *p = m_catalog->at(index.row());
+    if (!p)
         return {};
 
     switch (role) {
     case Qt::DisplayRole:
-        return QStringLiteral("%1\n%2 · v%3")
-            .arg(m->name.get(), m->manufacturer, m->version);
+        return QStringLiteral("%1\n%2 · %3")
+            .arg(p->productName, p->manufacturer, p->productId);
     case Qt::ToolTipRole:
-        return tr("ID: %1\nHardware: %2 (%3)")
-            .arg(m->id, m->hardware.target, m->hardware.transceiver);
-    case ManifestIdRole:
-        return m->id;
-    case ManifestPtrRole:
-        return QVariant::fromValue(const_cast<Manifest *>(m));
+        return tr("Produkt-ID: %1\nApp-Programm: %2")
+            .arg(p->productId, p->appProgramRefId);
+    case ProductIdRole:
+        return p->productId;
+    case ProductPtrRole:
+        return QVariant::fromValue(const_cast<KnxHardwareProduct *>(p));
     }
     return {};
 }

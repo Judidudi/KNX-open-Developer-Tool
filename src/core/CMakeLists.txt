@@ -9,8 +9,12 @@ add_library(knxodt_core STATIC
     ComObjectLink.cpp
     Manifest.h
     Manifest.cpp
-    DeviceCatalog.h
-    DeviceCatalog.cpp
+    KnxApplicationProgram.h
+    KnxApplicationProgram.cpp
+    KnxprodCatalog.h
+    KnxprodCatalog.cpp
+    YamlToKnxprod.h
+    YamlToKnxprod.cpp
     DptRegistry.h
     DptRegistry.cpp
     Project.h

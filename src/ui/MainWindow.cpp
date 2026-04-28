@@ -12,8 +12,10 @@
 #include "Project.h"
 #include "TopologyNode.h"
 #include "DeviceInstance.h"
-#include "DeviceCatalog.h"
+#include "KnxprodCatalog.h"
+#include "KnxApplicationProgram.h"
 #include "Manifest.h"
+#include "YamlToKnxprod.h"
 #include "KnxprojSerializer.h"
 #include "GroupAddress.h"
 
@@ -36,13 +38,15 @@
 #include <QApplication>
 #include <QStandardPaths>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QCoreApplication>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     m_project    = std::make_unique<Project>();
-    m_catalog    = std::make_unique<DeviceCatalog>();
+    m_catalog    = std::make_unique<KnxprodCatalog>();
     m_interfaces = std::make_unique<InterfaceManager>();
 
     setupCentralWidget();
@@ -72,19 +76,36 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::loadCatalog()
 {
-    QString envPath = qEnvironmentVariable("KNXODT_CATALOG_PATH");
-    if (!envPath.isEmpty())
-        m_catalog->addSearchPath(envPath);
-
     const QDir appDir(QCoreApplication::applicationDirPath());
-    m_catalog->addSearchPath(appDir.absoluteFilePath(QStringLiteral("catalog/devices")));
-    m_catalog->addSearchPath(appDir.absoluteFilePath(QStringLiteral("../catalog/devices")));
-    m_catalog->addSearchPath(appDir.absoluteFilePath(QStringLiteral("../../catalog/devices")));
-
     const QString userPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
                              + QStringLiteral("/catalog/devices");
-    QDir().mkpath(userPath);
-    m_catalog->addSearchPath(userPath);
+
+    QStringList searchPaths;
+    const QString envPath = qEnvironmentVariable("KNXODT_CATALOG_PATH");
+    if (!envPath.isEmpty())
+        searchPaths << envPath;
+    searchPaths << appDir.absoluteFilePath(QStringLiteral("catalog/devices"))
+                << appDir.absoluteFilePath(QStringLiteral("../catalog/devices"))
+                << appDir.absoluteFilePath(QStringLiteral("../../catalog/devices"))
+                << userPath;
+
+    for (const QString &path : searchPaths) {
+        QDir().mkpath(path);
+        m_catalog->addSearchPath(path);
+
+        // Auto-convert any YAML manifests that don't have a .knxprod counterpart
+        const QDir dir(path);
+        for (const QString &yamlFile : dir.entryList({QStringLiteral("*.yaml")}, QDir::Files)) {
+            const QString knxprodPath = dir.absoluteFilePath(
+                QFileInfo(yamlFile).baseName() + QStringLiteral(".knxprod"));
+            if (!QFile::exists(knxprodPath)) {
+                const QString yamlPath = dir.absoluteFilePath(yamlFile);
+                auto manifest = loadManifest(yamlPath);
+                if (manifest.has_value())
+                    YamlToKnxprod::writeFile(*manifest, knxprodPath);
+            }
+        }
+    }
 
     m_catalog->reload();
 }
@@ -323,9 +344,11 @@ void MainWindow::addGroupAddress()
     markModified();
 }
 
-void MainWindow::onAddDeviceRequested(std::shared_ptr<Manifest> manifest)
+void MainWindow::onAddDeviceRequested(const QString &productId,
+                                       const QString &productName,
+                                       std::shared_ptr<KnxApplicationProgram> appProgram)
 {
-    if (!manifest)
+    if (!appProgram)
         return;
 
     if (m_project->areaCount() == 0)
@@ -339,14 +362,14 @@ void MainWindow::onAddDeviceRequested(std::shared_ptr<Manifest> manifest)
     const QString physAddr = QStringLiteral("%1.%2.%3").arg(area->id()).arg(line->id()).arg(nextMember);
 
     const QString instanceId = QStringLiteral("d%1").arg(nextMember);
-    auto dev = std::make_unique<DeviceInstance>(instanceId, manifest->id, manifest->version);
+    auto dev = std::make_unique<DeviceInstance>(instanceId, productId, appProgram->id);
     dev->setPhysicalAddress(physAddr);
-    dev->setManifest(manifest);
+    dev->setAppProgram(appProgram);
 
-    for (const ManifestParameter &p : manifest->parameters)
+    for (const KnxParameter &p : appProgram->parameters)
         dev->parameters()[p.id] = p.defaultValue;
 
-    for (const ManifestComObject &co : manifest->comObjects) {
+    for (const KnxComObject &co : appProgram->comObjects) {
         ComObjectLink link;
         link.comObjectId = co.id;
         dev->addLink(link);
@@ -355,7 +378,7 @@ void MainWindow::onAddDeviceRequested(std::shared_ptr<Manifest> manifest)
     line->addDevice(std::move(dev));
     m_projectTree->refresh();
     markModified();
-    statusBar()->showMessage(tr("Gerät hinzugefügt: %1 (%2)").arg(manifest->name.get(), physAddr));
+    statusBar()->showMessage(tr("Gerät hinzugefügt: %1 (%2)").arg(productName, physAddr));
 }
 
 void MainWindow::onDeviceSelected(DeviceInstance *device)
@@ -368,8 +391,8 @@ void MainWindow::onDeviceSelected(DeviceInstance *device)
         return;
     }
 
-    if (!device->manifest())
-        device->setManifest(m_catalog->sharedById(device->productRefId()));
+    if (!device->appProgram())
+        device->setAppProgram(m_catalog->sharedByProductRef(device->productRefId()));
 
     m_deviceEditor->setDevice(device, m_project.get());
     m_centerStack->setCurrentWidget(m_deviceEditor);
@@ -436,18 +459,18 @@ void MainWindow::onProgramClicked()
             tr("Bitte zuerst mit einem Bus-Interface verbinden."));
         return;
     }
-    if (!m_selectedDevice->manifest())
-        m_selectedDevice->setManifest(m_catalog->sharedById(m_selectedDevice->productRefId()));
-    if (!m_selectedDevice->manifest()) {
-        QMessageBox::critical(this, tr("Manifest fehlt"),
-            tr("Für das Gerät %1 wurde kein Manifest gefunden.").arg(m_selectedDevice->productRefId()));
+    if (!m_selectedDevice->appProgram())
+        m_selectedDevice->setAppProgram(m_catalog->sharedByProductRef(m_selectedDevice->productRefId()));
+    if (!m_selectedDevice->appProgram()) {
+        QMessageBox::critical(this, tr("Anwendungsprogramm fehlt"),
+            tr("Für das Gerät %1 wurde kein Anwendungsprogramm gefunden.").arg(m_selectedDevice->productRefId()));
         return;
     }
 
     auto *programmer = new DeviceProgrammer(
         m_interfaces->activeInterface(),
         m_selectedDevice,
-        m_selectedDevice->manifest(),
+        m_selectedDevice->appProgram(),
         this);
 
     auto *dlg = new ProgramDialog(programmer, this);

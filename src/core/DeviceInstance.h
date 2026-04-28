@@ -7,7 +7,7 @@
 #include <map>
 #include <memory>
 
-struct Manifest;
+class KnxApplicationProgram;
 
 // A concrete device placed in the topology.
 // Stores instance-specific data: physical address, KNX product/app refs,
@@ -37,17 +37,17 @@ public:
     QList<ComObjectLink>        &links()             { return m_links; }
     const QList<ComObjectLink>  &links() const       { return m_links; }
 
-    // Resolved manifest (set by DeviceCatalog after loading, removed in Phase B)
-    void            setManifest(std::shared_ptr<Manifest> m) { m_manifest = std::move(m); }
-    Manifest       *manifest()       { return m_manifest.get(); }
-    const Manifest *manifest() const { return m_manifest.get(); }
+    // Resolved application program (set by KnxprodCatalog after loading)
+    void setAppProgram(std::shared_ptr<KnxApplicationProgram> p) { m_appProgram = std::move(p); }
+    KnxApplicationProgram       *appProgram()       { return m_appProgram.get(); }
+    const KnxApplicationProgram *appProgram() const { return m_appProgram.get(); }
 
 private:
-    QString                      m_id;
-    QString                      m_productRefId;
-    QString                      m_appProgramRefId;
-    QString                      m_physAddr;
-    std::map<QString, QVariant>  m_params;
-    QList<ComObjectLink>         m_links;
-    std::shared_ptr<Manifest>    m_manifest;
+    QString                                  m_id;
+    QString                                  m_productRefId;
+    QString                                  m_appProgramRefId;
+    QString                                  m_physAddr;
+    std::map<QString, QVariant>              m_params;
+    QList<ComObjectLink>                     m_links;
+    std::shared_ptr<KnxApplicationProgram>   m_appProgram;
 };

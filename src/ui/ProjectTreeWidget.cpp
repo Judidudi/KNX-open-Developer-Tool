@@ -61,7 +61,7 @@ void ProjectTreeWidget::setProject(Project *project)
     updateRootIndices();
 }
 
-void ProjectTreeWidget::setCatalog(DeviceCatalog *catalog)
+void ProjectTreeWidget::setCatalog(KnxprodCatalog *catalog)
 {
     m_catWidget->setCatalog(catalog);
 }

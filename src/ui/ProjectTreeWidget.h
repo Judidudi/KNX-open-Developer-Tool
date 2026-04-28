@@ -8,8 +8,8 @@ class ProjectTreeModel;
 class DeviceInstance;
 class GroupAddress;
 class CatalogWidget;
-class DeviceCatalog;
-struct Manifest;
+class KnxprodCatalog;
+class KnxApplicationProgram;
 
 class QTabWidget;
 class QTreeView;
@@ -22,7 +22,7 @@ public:
     explicit ProjectTreeWidget(QWidget *parent = nullptr);
 
     void setProject(Project *project);
-    void setCatalog(DeviceCatalog *catalog);
+    void setCatalog(KnxprodCatalog *catalog);
     void refresh();
 
     ProjectTreeModel *model() const { return m_model; }
@@ -31,7 +31,9 @@ signals:
     void deviceSelected(DeviceInstance *device);
     void groupAddressSelected(GroupAddress *ga);
     void selectionCleared();
-    void addDeviceRequested(std::shared_ptr<Manifest> manifest);
+    void addDeviceRequested(const QString &productId,
+                            const QString &productName,
+                            std::shared_ptr<KnxApplicationProgram> appProgram);
 
 private slots:
     void onTopoSelectionChanged();
