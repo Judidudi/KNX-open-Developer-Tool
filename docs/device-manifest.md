@@ -1,8 +1,8 @@
 # Device Manifest Format
 
-Device manifests describe a KNX device type. The tool reads them from the catalog
-directory. The OpenKNX firmware stack reads them at compile time to generate the
-correct memory layout on the device.
+Device manifests describe a KNX device type. They are written in YAML (authoring format
+for firmware developers) and auto-converted to `.knxprod` (KNX standard format) by the
+tool on first launch.
 
 **The manifest is the shared contract between tool and firmware** — both sides
 must use the same `memoryLayout` addresses and `parameters[].memoryOffset` values.
@@ -12,6 +12,10 @@ must use the same `memoryLayout` addresses and `parameters[].memoryOffset` value
 - **Bundled catalog:** `catalog/devices/<device-id>.yaml` (in this repository)
 - **User catalog:** `~/.config/OpenKNX/KNXOpenDeveloperTool/catalog/devices/`
 - **Override (CI/test):** Set env `KNXODT_CATALOG_PATH`
+
+On first launch, the tool auto-converts each `.yaml` to a `.knxprod` in the same directory
+via `YamlToKnxprod`. The generated `.knxprod` follows the KNX standard and can be imported
+into ETS 6 directly.
 
 ## Full Schema
 
@@ -137,6 +141,18 @@ Addresses can be decimal integers or hex strings (`"0x4000"`).
 If `parameterSize` is omitted, it is auto-computed as
 `max(memoryOffset + size)` over all parameters.
 
+## Generated KNX IDs
+
+When converting YAML → `.knxprod`, the tool assigns OpenKNX manufacturer ID `M-00FA`
+and derives stable product/app IDs from the manifest `id` field using a polynomial hash:
+
+```
+productRefId    = "M-00FA_H-{hash4(id)}_HP-{hash4(id)}"
+appProgramRefId = "M-00FA_A-{hash4(id)}-{versionHex(version)}"
+```
+
+These IDs are deterministic — the same manifest always produces the same `.knxprod`.
+
 ## DPT Reference (most common)
 
 | DPT | Name | Size |
@@ -159,4 +175,9 @@ If `parameterSize` is omitted, it is auto-computed as
 2. Set `comObjects[].number` to match the ComObject indices in the firmware.
 3. Set `parameters[].memoryOffset` to match the firmware's `KNX_PARAM_*` offsets.
 4. Set `memoryLayout.parameterBase` to match the firmware's `KNX_PARAM_BASE`.
-5. No code changes required — the tool picks up new manifests automatically.
+5. Launch the tool — it auto-converts the YAML to `.knxprod` and adds it to the catalog.
+
+Alternatively, generate the `.knxprod` manually:
+```bash
+# In a future DeviceCreatorDialog (Extras menu) or via the YamlToKnxprod API
+```

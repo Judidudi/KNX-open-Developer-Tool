@@ -15,12 +15,12 @@ Two repositories:
 
 ```
 app/          Entry point (main.cpp), translations
-src/core/     Data model: Project, Topology, GroupAddresses, Manifests, XML serializer
+src/core/     Data model: Project, Topology, GroupAddresses, KnxprodCatalog, serializers
 src/ui/       Qt Widgets: MainWindow, ProjectTree, Catalog, DeviceEditor, BusMonitor
 src/knxip/    KNXnet/IP client (tunneling, discovery, CEMI)
 src/usb/      USB KNX interface (Phase 6)
-catalog/      YAML device manifests (one file per device type)
-schemas/      JSON-Schema for manifest validation
+catalog/      YAML device manifests (authoring format; auto-converted to .knxprod)
+schemas/      JSON-Schema for YAML manifest validation
 tests/        QtTest unit tests
 ```
 
@@ -36,11 +36,24 @@ ctest --test-dir build
 
 ## Key Concepts
 
-**Device Manifest** (`catalog/devices/*.yaml`): Describes a device type – channels, communication objects (ComObjects), parameters, DPT types, memory layout. Shared contract between this tool and the firmware stack.
+**Device Manifest** (`catalog/devices/*.yaml`): YAML authoring format for firmware developers.
+Describes channels, ComObjects, parameters, DPT types, and memory layout.
+On first tool launch, each `.yaml` without a matching `.knxprod` is auto-converted by
+`YamlToKnxprod`. The `.yaml` is the shared contract between this tool and the firmware stack.
 
-**Project file** (`*.kodtproj`): XML file describing the installation – topology (areas/lines/devices), group addresses (3-level: main/middle/sub), parameter values, ComObject↔GA links.
+**KNX Application Program** (`KnxApplicationProgram`): In-memory representation of a device's
+application program, loaded from `.knxprod`. Contains `KnxParameterType`, `KnxParameter`,
+`KnxComObject`, `KnxMemoryLayout`. Shared between the catalog, device editor, and programmer.
 
-**IKnxInterface**: Abstract base for both `KnxIpTunnelingClient` and `UsbKnxInterface`. All bus access goes through this interface.
+**`.knxprod` catalog** (`KnxprodCatalog`): Scans directories for `.knxprod` files (KNX standard
+ZIP+XML format, ETS 6 compatible). The Catalog tab lists all loaded products.
+
+**Project file** (`*.knxproj`): KNX standard ZIP+XML format, ETS 6 compatible.
+Contains topology (areas/lines/devices), group addresses (3-level: main/middle/sub),
+parameter values, and ComObject↔GA links. Written/read by `KnxprojSerializer`.
+
+**IKnxInterface**: Abstract base for both `KnxIpTunnelingClient` and `UsbKnxInterface`.
+All bus access goes through this interface.
 
 **Group address format**: 3-level `main/middle/sub` (5/3/8 bit), e.g. `0/0/1`.
 
@@ -54,7 +67,13 @@ ctest --test-dir build
 
 ## Adding a New Device Type
 
-Create `catalog/devices/<your-device>.yaml` following the schema in `schemas/device-manifest.schema.yaml`. No code changes needed for the tool to pick it up.
+Create `catalog/devices/<your-device>.yaml` following the schema in
+`schemas/device-manifest.schema.yaml`. On next tool launch it will be auto-converted
+to `<your-device>.knxprod` in the same directory and appear in the Catalog tab.
+No code changes required.
+
+Alternatively, drop any standard-format `.knxprod` file directly into the catalog
+directory — it loads without YAML conversion.
 
 ## Running Tests
 

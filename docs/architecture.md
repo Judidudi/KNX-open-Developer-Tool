@@ -12,7 +12,7 @@
 │       ├── ProjectTreeWidget  (3-tab navigation panel, left)          │ │
 │       │     ├── Tab "Topologie"  – QTreeView (Areas/Lines/Devices)   │ │
 │       │     ├── Tab "Gruppen"    – QTreeView (Main/Mid/GroupAddress)  │ │
-│       │     └── Tab "Katalog"    – CatalogWidget (YAML manifests)    │ │
+│       │     └── Tab "Katalog"    – CatalogWidget (.knxprod products) │ │
 │       ├── QStackedWidget  (center)                                    │ │
 │       │     ├── DeviceEditorWidget (Parameter + ComObject tabs)      │ │
 │       │     └── BusMonitorWidget  (live telegram log, table model)   │ │
@@ -25,9 +25,10 @@
 │       Project                                                   │    │ │
 │       ├── TopologyNode  (Area → Line → DeviceInstance)          │    │ │
 │       ├── GroupAddress  (3-level: main/middle/sub, DPT)         │    │ │
-│       ├── DeviceInstance → Manifest                             │    │ │
-│       ├── DeviceCatalog (scans catalog/, loads YAML)            │    │ │
-│       └── ProjectXmlSerializer (*.kodtproj read/write)          │    │ │
+│       ├── DeviceInstance → KnxApplicationProgram                │    │ │
+│       ├── KnxprodCatalog (scans dirs, loads .knxprod files)     │    │ │
+│       ├── YamlToKnxprod  (YAML manifest → .knxprod ZIP)         │    │ │
+│       └── KnxprojSerializer (*.knxproj ZIP+XML read/write)      │    │ │
 │                                                                 │    │ │
 │  src/knxip/ ────────────────────────────────────────────────── │    │ │
 │       IKnxInterface (abstract)                                  │    │ │
@@ -73,38 +74,66 @@
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Project File Format (`*.kodtproj`)
+## Project File Format (`*.knxproj`)
 
-XML file written/read by `ProjectXmlSerializer`. Structure:
+KNX standard ZIP archive, compatible with ETS 6. Written/read by `KnxprojSerializer`.
 
 ```
-KodtProject  (version="1.0")
-├── ProjectInfo
-│   ├── Name
-│   └── Created
-├── Topology
-│   └── Area[]  (id, name)
-│       └── Line[]  (id, name, medium)
-│           └── Device[]  (id, physAddr, catalogRef, version)
-│               ├── Parameters
-│               │   └── Param[]  (id, value)
-│               └── ComObjectLinks
-│                   └── Link[]  (comObjectId, ga)
-└── GroupAddresses
-    └── MainGroup[]  (id, name)
-        └── MiddleGroup[]  (id, name)
-            └── GroupAddress[]  (id, name, dpt)
+projekt.knxproj  (ZIP)
+├── 0.xml                    ← Project list + metadata (project name, ID)
+└── P-XXXXXXXX/0.xml         ← Main project data
+    ├── Topology
+    │   └── Area[]           (Address, Name)
+    │       └── Line[]       (Address, Name, MediumTypeRefId)
+    │           └── DeviceInstance[]  (Address, ProductRefId, AppProgramRefId)
+    │               ├── ParameterInstanceRef[]  (RefId, Value)
+    │               └── ComObjectInstanceRef[]
+    │                   └── Connectors → Send/Receive → GroupAddressRefId
+    └── GroupAddresses
+        └── GroupRanges
+            └── GroupRange[]    (main groups)
+                └── GroupRange[]  (middle groups)
+                    └── GroupAddress[]  (Address, Name, DPTs)
 ```
 
-## Device Manifest Format (YAML)
+Namespace: `http://knx.org/xml/project/21`
 
-`catalog/devices/*.yaml` — one file per device type.
+## Device Catalog Format (`.knxprod`)
 
-This is the shared contract between this tool and the OpenKNX firmware stack.
-The manifest defines the complete memory layout so both sides agree without
-any out-of-band configuration.
+KNX standard ZIP archive, compatible with ETS 6. Read by `KnxprodCatalog`.
 
-See `docs/device-manifest.md` for full documentation.
+```
+device.knxprod  (ZIP)
+└── M-XXXX/
+    ├── M-XXXX_H-{hash}_HP-{hash}.xml     ← Hardware XML
+    └── M-XXXX_A-{hash}-{ver}.xml         ← ApplicationProgram XML
+```
+
+OpenKNX devices use manufacturer ID `M-00FA`. IDs are derived deterministically
+from the YAML manifest ID using a polynomial hash (see `YamlToKnxprod`).
+
+## YAML → .knxprod Conversion Flow
+
+```
+catalog/devices/*.yaml
+         │
+         │  loadManifest()         (Manifest struct, yaml-cpp)
+         ▼
+   YamlToKnxprod::writeFile()
+         │
+         │  buildHardwareXml()     Hardware ZIP entry
+         │  buildApplicationXml()  ApplicationProgram ZIP entry
+         ▼
+catalog/devices/*.knxprod
+         │
+         │  KnxprodCatalog::reload()
+         ▼
+KnxHardwareProduct → KnxApplicationProgram
+         │
+         │  shown in Catalog tab
+         ▼
+DeviceInstance::setAppProgram()
+```
 
 ## KNX Memory Layout
 
@@ -122,11 +151,11 @@ Association Table (default base 0x4100):
   [ga_idx][co_number]   ← index into address table (1-based) + ComObject number
   ...
 
-Parameter Block (base from manifest memoryLayout.parameterBase):
-  raw bytes at offsets defined per-parameter in the manifest
+Parameter Block (base from KnxMemoryLayout.parameterBase):
+  raw bytes at offsets defined per-parameter in KnxParameter.offset
 ```
 
-`TableBuilder` computes these byte arrays from a `DeviceInstance + Manifest`.
+`TableBuilder` computes these byte arrays from a `DeviceInstance + KnxApplicationProgram`.
 
 ## Programming Sequence
 
@@ -173,7 +202,8 @@ Device ── L_Data.Ind ──► Router ── TUNNEL_REQUEST ──► KnxIpT
 ## Library Dependency Graph
 
 ```
-knxodt_core   (Project, Manifest, GroupAddress, Topology, XML, Catalog)
+knxodt_core   (Project, KnxApplicationProgram, GroupAddress, Topology,
+               KnxprodCatalog, YamlToKnxprod, KnxprojSerializer, Manifest)
      ▲
 knxodt_knxip  (IKnxInterface, CemiFrame, TableBuilder, DeviceProgrammer, …)
      ▲
