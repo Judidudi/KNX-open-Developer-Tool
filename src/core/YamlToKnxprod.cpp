@@ -1,78 +1,10 @@
 #include "YamlToKnxprod.h"
+#include "ZipUtils.h"
 #include "Manifest.h"
 
-#include <QBuffer>
 #include <QFile>
 #include <QXmlStreamWriter>
 #include <QDate>
-
-// ─── CRC-32 + ZIP (duplicated from KnxprojSerializer; extracted in Phase D) ──
-
-static quint32 yCrc32(const QByteArray &data)
-{
-    quint32 crc = 0xFFFFFFFFu;
-    for (unsigned char c : data) {
-        crc ^= c;
-        for (int j = 0; j < 8; ++j)
-            crc = (crc & 1u) ? (crc >> 1) ^ 0xEDB88320u : (crc >> 1);
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-
-struct YZipEntry {
-    QByteArray name;
-    QByteArray data;
-    quint32    crc    = 0;
-    quint32    offset = 0;
-};
-
-static void yu16(QByteArray &b, quint16 v)
-{
-    b += static_cast<char>(v & 0xFF);
-    b += static_cast<char>((v >> 8) & 0xFF);
-}
-static void yu32(QByteArray &b, quint32 v)
-{
-    b += static_cast<char>(v & 0xFF);
-    b += static_cast<char>((v >> 8) & 0xFF);
-    b += static_cast<char>((v >> 16) & 0xFF);
-    b += static_cast<char>((v >> 24) & 0xFF);
-}
-
-static QByteArray yBuildZip(QList<YZipEntry> &files)
-{
-    QByteArray out;
-    for (YZipEntry &f : files) {
-        f.offset = static_cast<quint32>(out.size());
-        f.crc    = yCrc32(f.data);
-        const auto sz = static_cast<quint32>(f.data.size());
-        const auto nl = static_cast<quint16>(f.name.size());
-        yu32(out, 0x04034b50u); yu16(out, 20); yu16(out, 0); yu16(out, 0);
-        yu16(out, 0); yu16(out, 0);
-        yu32(out, f.crc); yu32(out, sz); yu32(out, sz);
-        yu16(out, nl); yu16(out, 0);
-        out += f.name; out += f.data;
-    }
-    const quint32 cdOff = static_cast<quint32>(out.size());
-    quint32 cdSz = 0;
-    for (const YZipEntry &f : files) {
-        const int before = out.size();
-        const auto sz = static_cast<quint32>(f.data.size());
-        const auto nl = static_cast<quint16>(f.name.size());
-        yu32(out, 0x02014b50u); yu16(out, 0); yu16(out, 20); yu16(out, 0); yu16(out, 0);
-        yu16(out, 0); yu16(out, 0);
-        yu32(out, f.crc); yu32(out, sz); yu32(out, sz);
-        yu16(out, nl); yu16(out, 0); yu16(out, 0);
-        yu16(out, 0); yu16(out, 0); yu32(out, 0); yu32(out, f.offset);
-        out += f.name;
-        cdSz += static_cast<quint32>(out.size() - before);
-    }
-    const auto cnt = static_cast<quint16>(files.size());
-    yu32(out, 0x06054b50u); yu16(out, 0); yu16(out, 0);
-    yu16(out, cnt); yu16(out, cnt);
-    yu32(out, cdSz); yu32(out, cdOff); yu16(out, 0);
-    return out;
-}
 
 // ─── ID helpers ──────────────────────────────────────────────────────────────
 
@@ -335,19 +267,11 @@ QByteArray YamlToKnxprod::toZip(const Manifest &m)
     const QString hwFile = QStringLiteral("M-00FA_H-%1_HP-%1.xml").arg(h4);
     const QString apFile = QStringLiteral("M-00FA_A-%1-%2.xml").arg(h4, ver);
 
-    QList<YZipEntry> entries;
+    QList<QPair<QString, QByteArray>> entries;
+    entries.append({ mfDir + hwFile, buildHardwareXml(m, h4, ver) });
+    entries.append({ mfDir + apFile, buildApplicationXml(m, h4, ver) });
 
-    YZipEntry hw;
-    hw.name = (mfDir + hwFile).toUtf8();
-    hw.data = buildHardwareXml(m, h4, ver);
-    entries.append(hw);
-
-    YZipEntry ap;
-    ap.name = (mfDir + apFile).toUtf8();
-    ap.data = buildApplicationXml(m, h4, ver);
-    entries.append(ap);
-
-    return yBuildZip(entries);
+    return ZipUtils::buildZip(entries);
 }
 
 bool YamlToKnxprod::writeFile(const Manifest &m, const QString &outputPath)

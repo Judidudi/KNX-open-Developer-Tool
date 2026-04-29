@@ -1,77 +1,9 @@
 #include "KnxprodCatalog.h"
+#include "ZipUtils.h"
 
 #include <QDir>
-#include <QFile>
 #include <QFileInfo>
 #include <QXmlStreamReader>
-#include <QMap>
-
-// ─── Minimal ZIP reader (STORE only) ─────────────────────────────────────────
-// Duplicated from KnxprojSerializer; will be extracted in Phase D.
-
-static quint16 zru16(const QByteArray &d, int i)
-{
-    return static_cast<quint16>(
-        static_cast<unsigned char>(d[i]) |
-        (static_cast<unsigned char>(d[i + 1]) << 8));
-}
-
-static quint32 zru32(const QByteArray &d, int i)
-{
-    return static_cast<quint32>(
-        static_cast<unsigned char>(d[i]) |
-        (static_cast<unsigned char>(d[i + 1]) << 8) |
-        (static_cast<unsigned char>(d[i + 2]) << 16) |
-        (static_cast<unsigned char>(d[i + 3]) << 24));
-}
-
-static QMap<QString, QByteArray> zipEntries(const QString &path)
-{
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly))
-        return {};
-    const QByteArray all = f.readAll();
-    f.close();
-
-    if (all.size() < 22)
-        return {};
-
-    int eocd = -1;
-    for (int i = all.size() - 22; i >= 0; --i) {
-        if (zru32(all, i) == 0x06054b50u) { eocd = i; break; }
-    }
-    if (eocd < 0)
-        return {};
-
-    const quint32 cdOff   = zru32(all, eocd + 16);
-    const quint16 cdCount = zru16(all, eocd + 10);
-    int pos = static_cast<int>(cdOff);
-
-    QMap<QString, QByteArray> entries;
-    for (int i = 0; i < cdCount; ++i) {
-        if (pos + 46 > all.size() || zru32(all, pos) != 0x02014b50u)
-            break;
-        const quint16 comp       = zru16(all, pos + 10);
-        const quint32 compSize   = zru32(all, pos + 20);
-        const quint16 nameLen    = zru16(all, pos + 28);
-        const quint16 extraLen   = zru16(all, pos + 30);
-        const quint16 commentLen = zru16(all, pos + 32);
-        const quint32 localOff   = zru32(all, pos + 42);
-        const QString name       = QString::fromUtf8(all.mid(pos + 46, nameLen));
-        pos += 46 + nameLen + extraLen + commentLen;
-
-        if (comp != 0) continue;
-
-        const int lp = static_cast<int>(localOff);
-        if (lp + 30 > all.size() || zru32(all, lp) != 0x04034b50u)
-            continue;
-        const int dataStart = lp + 30 + zru16(all, lp + 26) + zru16(all, lp + 28);
-        if (dataStart + static_cast<int>(compSize) > all.size())
-            continue;
-        entries[name] = all.mid(dataStart, static_cast<int>(compSize));
-    }
-    return entries;
-}
 
 // ─── Hardware XML parser ──────────────────────────────────────────────────────
 
@@ -307,7 +239,7 @@ void KnxprodCatalog::reload()
 
 bool KnxprodCatalog::loadKnxprod(const QString &path)
 {
-    const auto entries = zipEntries(path);
+    const auto entries = ZipUtils::readEntries(path);
     if (entries.isEmpty())
         return false;
 

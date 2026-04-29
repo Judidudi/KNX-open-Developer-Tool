@@ -1,11 +1,11 @@
 #include "KnxprojSerializer.h"
+#include "ZipUtils.h"
 #include "Project.h"
 #include "TopologyNode.h"
 #include "DeviceInstance.h"
 #include "GroupAddress.h"
 #include "ComObjectLink.h"
 
-#include <QBuffer>
 #include <QFile>
 #include <QXmlStreamWriter>
 #include <QXmlStreamReader>
@@ -14,180 +14,6 @@
 #include <QMap>
 
 static constexpr const char *kNs = "http://knx.org/xml/project/21";
-
-// ─── CRC-32 (ZIP standard polynomial) ────────────────────────────────────────
-
-static quint32 crc32Compute(const QByteArray &data)
-{
-    quint32 crc = 0xFFFFFFFFu;
-    for (unsigned char c : data) {
-        crc ^= c;
-        for (int j = 0; j < 8; ++j)
-            crc = (crc & 1u) ? (crc >> 1) ^ 0xEDB88320u : (crc >> 1);
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-
-// ─── Minimal ZIP writer (STORE / no compression) ─────────────────────────────
-
-struct ZipEntry {
-    QByteArray name;
-    QByteArray data;
-    quint32    crc    = 0;
-    quint32    offset = 0;
-};
-
-static void u16(QByteArray &b, quint16 v)
-{
-    b += static_cast<char>(v & 0xFF);
-    b += static_cast<char>((v >> 8) & 0xFF);
-}
-
-static void u32(QByteArray &b, quint32 v)
-{
-    b += static_cast<char>(v & 0xFF);
-    b += static_cast<char>((v >> 8) & 0xFF);
-    b += static_cast<char>((v >> 16) & 0xFF);
-    b += static_cast<char>((v >> 24) & 0xFF);
-}
-
-static QByteArray buildZip(QList<ZipEntry> &files)
-{
-    QByteArray out;
-
-    for (ZipEntry &f : files) {
-        f.offset = static_cast<quint32>(out.size());
-        f.crc    = crc32Compute(f.data);
-        const auto sz = static_cast<quint32>(f.data.size());
-        const auto nl = static_cast<quint16>(f.name.size());
-
-        u32(out, 0x04034b50u);  // local file header sig
-        u16(out, 20);            // version needed
-        u16(out, 0);             // flags
-        u16(out, 0);             // compression: STORE
-        u16(out, 0);             // mod time
-        u16(out, 0);             // mod date
-        u32(out, f.crc);
-        u32(out, sz);            // compressed size
-        u32(out, sz);            // uncompressed size
-        u16(out, nl);            // name length
-        u16(out, 0);             // extra length
-        out += f.name;
-        out += f.data;
-    }
-
-    const quint32 cdOffset = static_cast<quint32>(out.size());
-    quint32 cdSize = 0;
-
-    for (const ZipEntry &f : files) {
-        const int before = out.size();
-        const auto sz = static_cast<quint32>(f.data.size());
-        const auto nl = static_cast<quint16>(f.name.size());
-
-        u32(out, 0x02014b50u);  // central directory sig
-        u16(out, 0);             // version made by
-        u16(out, 20);            // version needed
-        u16(out, 0);             // flags
-        u16(out, 0);             // compression
-        u16(out, 0);             // mod time
-        u16(out, 0);             // mod date
-        u32(out, f.crc);
-        u32(out, sz);            // compressed size
-        u32(out, sz);            // uncompressed size
-        u16(out, nl);            // name length
-        u16(out, 0);             // extra length
-        u16(out, 0);             // comment length
-        u16(out, 0);             // disk start
-        u16(out, 0);             // internal attrs
-        u32(out, 0);             // external attrs
-        u32(out, f.offset);      // local header offset
-        out += f.name;
-        cdSize += static_cast<quint32>(out.size() - before);
-    }
-
-    const auto count = static_cast<quint16>(files.size());
-    u32(out, 0x06054b50u);      // EOCD sig
-    u16(out, 0);                 // disk number
-    u16(out, 0);                 // CD start disk
-    u16(out, count);             // entries this disk
-    u16(out, count);             // total entries
-    u32(out, cdSize);            // CD size
-    u32(out, cdOffset);          // CD offset
-    u16(out, 0);                 // comment length
-
-    return out;
-}
-
-// ─── Minimal ZIP reader (STORE only) ─────────────────────────────────────────
-
-static quint16 ru16(const QByteArray &d, int i)
-{
-    return static_cast<quint16>(
-        static_cast<unsigned char>(d[i]) |
-        (static_cast<unsigned char>(d[i + 1]) << 8));
-}
-
-static quint32 ru32(const QByteArray &d, int i)
-{
-    return static_cast<quint32>(
-        static_cast<unsigned char>(d[i]) |
-        (static_cast<unsigned char>(d[i + 1]) << 8) |
-        (static_cast<unsigned char>(d[i + 2]) << 16) |
-        (static_cast<unsigned char>(d[i + 3]) << 24));
-}
-
-// Returns a map: entry name → raw bytes (only STORE entries).
-static QMap<QString, QByteArray> readZip(const QString &path)
-{
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly))
-        return {};
-    const QByteArray all = f.readAll();
-    f.close();
-
-    if (all.size() < 22)
-        return {};
-
-    // Scan backwards for EOCD signature
-    int eocd = -1;
-    for (int i = all.size() - 22; i >= 0; --i) {
-        if (ru32(all, i) == 0x06054b50u) { eocd = i; break; }
-    }
-    if (eocd < 0)
-        return {};
-
-    const quint32 cdOff   = ru32(all, eocd + 16);
-    const quint16 cdCount = ru16(all, eocd + 10);
-    int pos = static_cast<int>(cdOff);
-
-    QMap<QString, QByteArray> entries;
-    for (int i = 0; i < cdCount; ++i) {
-        if (pos + 46 > all.size() || ru32(all, pos) != 0x02014b50u)
-            break;
-
-        const quint16 comp       = ru16(all, pos + 10);
-        const quint32 compSize   = ru32(all, pos + 20);
-        const quint16 nameLen    = ru16(all, pos + 28);
-        const quint16 extraLen   = ru16(all, pos + 30);
-        const quint16 commentLen = ru16(all, pos + 32);
-        const quint32 localOff   = ru32(all, pos + 42);
-        const QString name       = QString::fromUtf8(all.mid(pos + 46, nameLen));
-        pos += 46 + nameLen + extraLen + commentLen;
-
-        if (comp != 0)  // skip compressed entries
-            continue;
-
-        const int lp = static_cast<int>(localOff);
-        if (lp + 30 > all.size() || ru32(all, lp) != 0x04034b50u)
-            continue;
-        const int dataStart = lp + 30 + ru16(all, lp + 26) + ru16(all, lp + 28);
-        if (dataStart + static_cast<int>(compSize) > all.size())
-            continue;
-
-        entries[name] = all.mid(dataStart, static_cast<int>(compSize));
-    }
-    return entries;
-}
 
 // ─── ID helpers ──────────────────────────────────────────────────────────────
 
@@ -390,19 +216,13 @@ bool KnxprojSerializer::save(Project &project, const QString &filePath)
 
     const QString pid = project.knxprojId();
 
-    QList<ZipEntry> entries;
+    QList<QPair<QString, QByteArray>> entries;
+    entries.append({ QStringLiteral("0.xml"),
+                     buildRoot0xml(project) });
+    entries.append({ QStringLiteral("P-%1/0.xml").arg(pid),
+                     buildProject0xml(project) });
 
-    ZipEntry root;
-    root.name = QByteArrayLiteral("0.xml");
-    root.data = buildRoot0xml(project);
-    entries.append(root);
-
-    ZipEntry proj;
-    proj.name = (QStringLiteral("P-%1/0.xml").arg(pid)).toUtf8();
-    proj.data = buildProject0xml(project);
-    entries.append(proj);
-
-    const QByteArray zip = buildZip(entries);
+    const QByteArray zip = ZipUtils::buildZip(entries);
 
     QFile f(filePath);
     if (!f.open(QIODevice::WriteOnly))
@@ -414,7 +234,7 @@ bool KnxprojSerializer::save(Project &project, const QString &filePath)
 
 std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
 {
-    const auto entries = readZip(filePath);
+    const auto entries = ZipUtils::readEntries(filePath);
     if (entries.isEmpty())
         return nullptr;
 
