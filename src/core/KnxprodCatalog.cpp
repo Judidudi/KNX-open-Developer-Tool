@@ -115,21 +115,46 @@ static HwInfo parseHardwareXml(const QByteArray &xml)
 
 // ─── ApplicationProgram XML parser ───────────────────────────────────────────
 
+// Normalise DPT strings from different manufacturer conventions to our "M.SSS" format.
+// "DPST-1-1" → "1.001", "DPT-5" → "DPT-5" (kept), "1.001" → "1.001" (kept).
+static QString normalizeDpt(const QString &raw)
+{
+    // DPST-<main>-<sub>  →  <main>.<sub padded to 3 digits>
+    if (raw.startsWith(QLatin1String("DPST-"))) {
+        const QStringList parts = raw.mid(5).split(QLatin1Char('-'));
+        if (parts.size() >= 2) {
+            bool ok1 = false, ok2 = false;
+            const int main = parts[0].toInt(&ok1);
+            const int sub  = parts[1].toInt(&ok2);
+            if (ok1 && ok2)
+                return QString::number(main) + QLatin1Char('.') + QString::number(sub).rightJustified(3, QLatin1Char('0'));
+        }
+    }
+    return raw;
+}
+
 static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArray &xml)
 {
     auto prog = std::make_shared<KnxApplicationProgram>();
     QXmlStreamReader rd(xml);
 
-    // Tracking state
-    bool insideStatic = false;
+    // Depth counter: incremented for <Static>, <ParameterBlock>, <ChannelIndependentBlock>;
+    // parameters and ComObjects are parsed whenever insideParamContext > 0.
+    int insideParamContext = 0;
     KnxParameterType currentPT;
     bool inPT = false;
+    // Track the largest AbsoluteSegment seen (some manufacturers emit several small ones).
+    quint32 bestSegSize = 0;
 
     while (!rd.atEnd()) {
         const auto token = rd.readNext();
         if (token == QXmlStreamReader::EndElement) {
             const QStringView n = rd.name();
-            if (n == QLatin1String("Static")) insideStatic = false;
+            if (n == QLatin1String("Static") ||
+                n == QLatin1String("ParameterBlock") ||
+                n == QLatin1String("ChannelIndependentBlock")) {
+                if (insideParamContext > 0) --insideParamContext;
+            }
             if (n == QLatin1String("ParameterType") && inPT) {
                 prog->paramTypes.insert(currentPT.id, currentPT);
                 inPT = false;
@@ -148,17 +173,22 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
         } else if (n == QLatin1String("Manufacturer")) {
             prog->manufacturer = rd.attributes().value(QLatin1String("RefId")).toString();
 
-        } else if (n == QLatin1String("Static")) {
-            insideStatic = true;
+        } else if (n == QLatin1String("Static") ||
+                   n == QLatin1String("ParameterBlock") ||
+                   n == QLatin1String("ChannelIndependentBlock")) {
+            ++insideParamContext;
 
-        } else if (n == QLatin1String("AbsoluteSegment") && insideStatic) {
-            bool ok = false;
-            const quint32 addr = rd.attributes().value(QLatin1String("Address")).toString().toUInt(&ok, 0);
-            if (ok) prog->memoryLayout.parameterBase = addr;
-            const quint32 sz = rd.attributes().value(QLatin1String("Size")).toString().toUInt(&ok, 0);
-            if (ok) prog->memoryLayout.parameterSize = sz;
+        } else if (n == QLatin1String("AbsoluteSegment") && insideParamContext > 0) {
+            bool addrOk = false, szOk = false;
+            const quint32 addr = rd.attributes().value(QLatin1String("Address")).toString().toUInt(&addrOk, 0);
+            const quint32 sz   = rd.attributes().value(QLatin1String("Size")).toString().toUInt(&szOk, 0);
+            if (szOk && sz > bestSegSize) {
+                bestSegSize = sz;
+                if (addrOk) prog->memoryLayout.parameterBase = addr;
+                prog->memoryLayout.parameterSize = sz;
+            }
 
-        } else if (n == QLatin1String("ParameterType") && insideStatic) {
+        } else if (n == QLatin1String("ParameterType") && insideParamContext > 0) {
             currentPT = {};
             currentPT.id = rd.attributes().value(QLatin1String("Id")).toString();
             inPT = true;
@@ -189,7 +219,16 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
             ev.text  = rd.attributes().value(QLatin1String("Text")).toString();
             currentPT.enumValues.append(ev);
 
-        } else if (n == QLatin1String("Parameter") && insideStatic) {
+        } else if (inPT &&
+                   (n == QLatin1String("TypeFloat") ||
+                    n == QLatin1String("TypeIPAddress") ||
+                    n == QLatin1String("TypeDate") ||
+                    n == QLatin1String("TypeTime"))) {
+            // Unknown type children — safe fallback to 4-byte UInt
+            currentPT.kind = KnxParameterType::Kind::UInt;
+            currentPT.size = 4;
+
+        } else if (n == QLatin1String("Parameter") && insideParamContext > 0) {
             KnxParameter p;
             const QString origId = rd.attributes().value(QLatin1String("OriginalId")).toString();
             p.id     = origId.isEmpty() ? rd.attributes().value(QLatin1String("Id")).toString() : origId;
@@ -207,17 +246,30 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
             }
             prog->parameters.append(p);
 
-        } else if (n == QLatin1String("ComObject") && insideStatic) {
+        } else if (n == QLatin1String("ComObject") && insideParamContext > 0) {
             KnxComObject co;
             const QString origId = rd.attributes().value(QLatin1String("OriginalId")).toString();
             co.id     = origId.isEmpty() ? rd.attributes().value(QLatin1String("Id")).toString() : origId;
             co.number = rd.attributes().value(QLatin1String("Number")).toInt();
             co.name   = rd.attributes().value(QLatin1String("Name")).toString();
-            co.dpt    = rd.attributes().value(QLatin1String("DatapointType")).toString();
+            co.dpt    = normalizeDpt(rd.attributes().value(QLatin1String("DatapointType")).toString());
+            // Support both combined "C,W,T" and individual flag attributes (real manufacturer files)
             const QString flagStr = rd.attributes().value(QLatin1String("CommunicationFlag")).toString();
-            // Flags are stored as a combined string "CW" or individual; split by comma if present
-            if (!flagStr.isEmpty())
+            if (!flagStr.isEmpty()) {
                 co.flags = flagStr.split(QLatin1Char(','), Qt::SkipEmptyParts);
+            } else {
+                const auto enabled = QLatin1String("Enabled");
+                if (rd.attributes().value(QLatin1String("CommunicationObjectEnable")).toString() == enabled)
+                    co.flags.append(QStringLiteral("C"));
+                if (rd.attributes().value(QLatin1String("ReadFlag")).toString() == enabled)
+                    co.flags.append(QStringLiteral("R"));
+                if (rd.attributes().value(QLatin1String("WriteFlag")).toString() == enabled)
+                    co.flags.append(QStringLiteral("W"));
+                if (rd.attributes().value(QLatin1String("TransmitFlag")).toString() == enabled)
+                    co.flags.append(QStringLiteral("T"));
+                if (rd.attributes().value(QLatin1String("UpdateFlag")).toString() == enabled)
+                    co.flags.append(QStringLiteral("U"));
+            }
             prog->comObjects.append(co);
         }
     }

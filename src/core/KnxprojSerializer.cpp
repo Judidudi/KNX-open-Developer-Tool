@@ -280,6 +280,7 @@ static QByteArray buildProject0xml(const Project &project)
                 xml.writeAttribute(QStringLiteral("Id"),             QStringLiteral("%1_DI-%2").arg(pid, dev->id()));
                 xml.writeAttribute(QStringLiteral("Address"),        devAddr);
                 xml.writeAttribute(QStringLiteral("Name"),           QString());
+                xml.writeAttribute(QStringLiteral("Description"),    dev->description());
                 xml.writeAttribute(QStringLiteral("ProductRefId"),   dev->productRefId());
                 xml.writeAttribute(QStringLiteral("AppProgramRefId"),dev->appProgramRefId());
                 xml.writeAttribute(QStringLiteral("LastModified"),   QDate::currentDate().toString(Qt::ISODate));
@@ -307,10 +308,13 @@ static QByteArray buildProject0xml(const Project &project)
                         xml.writeAttribute(QStringLiteral("RefId"), lnk.comObjectId);
                         if (lnk.ga.isValid()) {
                             xml.writeStartElement(QStringLiteral("Connectors"));
-                            xml.writeStartElement(QStringLiteral("Send"));
+                            const QString connTag = (lnk.direction == ComObjectLink::Direction::Receive)
+                                                    ? QStringLiteral("Receive")
+                                                    : QStringLiteral("Send");
+                            xml.writeStartElement(connTag);
                             xml.writeAttribute(QStringLiteral("GroupAddressRefId"),
                                                gaIdMap.value(lnk.ga.toString()));
-                            xml.writeEndElement(); // Send
+                            xml.writeEndElement(); // Send or Receive
                             xml.writeEndElement(); // Connectors
                         }
                         xml.writeEndElement(); // ComObjectInstanceRef
@@ -448,7 +452,12 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
     project->setKnxprojId(projectId);
 
     // We buffer unresolved GA refs so they can be resolved after GA section
-    struct PendingLink { DeviceInstance *dev; QString comObjectId; QString gaRefId; };
+    struct PendingLink {
+        DeviceInstance         *dev;
+        QString                 comObjectId;
+        QString                 gaRefId;
+        ComObjectLink::Direction direction = ComObjectLink::Direction::Send;
+    };
     QList<PendingLink> pending;
     QMap<QString, GroupAddress> gaById; // gaId → GroupAddress
 
@@ -506,6 +515,7 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
                 attrs.value(QLatin1String("ProductRefId")).toString(),
                 attrs.value(QLatin1String("AppProgramRefId")).toString());
             dev->setPhysicalAddress(physAddr);
+            dev->setDescription(attrs.value(QLatin1String("Description")).toString());
             currentDev = dev.get();
             currentLine->addDevice(std::move(dev));
 
@@ -521,10 +531,13 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
             // GA ref resolved below; add a placeholder link now
             currentDev->addLink(lnk);
 
-        } else if (name == QLatin1String("Send") && currentDev) {
+        } else if ((name == QLatin1String("Send") || name == QLatin1String("Receive")) && currentDev) {
             const QString gaRef = xml.attributes().value(QLatin1String("GroupAddressRefId")).toString();
             if (!gaRef.isEmpty() && !currentDev->links().isEmpty()) {
-                pending.append({currentDev, currentDev->links().last().comObjectId, gaRef});
+                const auto dir = (name == QLatin1String("Receive"))
+                                 ? ComObjectLink::Direction::Receive
+                                 : ComObjectLink::Direction::Send;
+                pending.append({currentDev, currentDev->links().last().comObjectId, gaRef, dir});
             }
 
         } else if (name == QLatin1String("GroupAddress")) {
@@ -555,7 +568,8 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
         // Find the link with matching comObjectId and set its GA
         for (ComObjectLink &lnk : p.dev->links()) {
             if (lnk.comObjectId == p.comObjectId && !lnk.ga.isValid()) {
-                lnk.ga = *ga;
+                lnk.ga        = *ga;
+                lnk.direction = p.direction;
                 break;
             }
         }

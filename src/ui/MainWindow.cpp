@@ -364,6 +364,7 @@ void MainWindow::onAddDeviceRequested(const QString &productId,
     const QString instanceId = QStringLiteral("d%1").arg(nextMember);
     auto dev = std::make_unique<DeviceInstance>(instanceId, productId, appProgram->id);
     dev->setPhysicalAddress(physAddr);
+    dev->setDescription(productName);
     dev->setAppProgram(appProgram);
 
     for (const KnxParameter &p : appProgram->parameters)
@@ -372,6 +373,13 @@ void MainWindow::onAddDeviceRequested(const QString &productId,
     for (const KnxComObject &co : appProgram->comObjects) {
         ComObjectLink link;
         link.comObjectId = co.id;
+        // Derive initial direction from ComObject flags:
+        // Contains W → Send; R or U (without W) → Receive; default → Send
+        if (co.flags.contains(QStringLiteral("W"))) {
+            link.direction = ComObjectLink::Direction::Send;
+        } else if (co.flags.contains(QStringLiteral("R")) || co.flags.contains(QStringLiteral("U"))) {
+            link.direction = ComObjectLink::Direction::Receive;
+        }
         dev->addLink(link);
     }
 

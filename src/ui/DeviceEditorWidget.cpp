@@ -38,8 +38,8 @@ DeviceEditorWidget::DeviceEditorWidget(QWidget *parent)
 
     auto *comLayout = new QVBoxLayout(m_comObjTab);
     m_comObjTable = new QTableWidget(m_comObjTab);
-    m_comObjTable->setColumnCount(4);
-    m_comObjTable->setHorizontalHeaderLabels({tr("Name"), tr("DPT"), tr("Flags"), tr("Gruppenadresse")});
+    m_comObjTable->setColumnCount(5);
+    m_comObjTable->setHorizontalHeaderLabels({tr("Name"), tr("DPT"), tr("Flags"), tr("Richtung"), tr("Gruppenadresse")});
     m_comObjTable->horizontalHeader()->setStretchLastSection(true);
     m_comObjTable->verticalHeader()->setVisible(false);
     m_comObjTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -158,33 +158,45 @@ void DeviceEditorWidget::buildComObjectTab()
         m_comObjTable->setItem(row, 1, new QTableWidgetItem(co.dpt));
         m_comObjTable->setItem(row, 2, new QTableWidgetItem(co.flags.join(QString())));
 
+        // Find currently linked state for this ComObject
+        ComObjectLink::Direction currentDir = ComObjectLink::Direction::Send;
+        QString linkedGa;
+        for (const ComObjectLink &link : m_device->links()) {
+            if (link.comObjectId == co.id && link.ga.isValid()) {
+                linkedGa   = link.ga.toString();
+                currentDir = link.direction;
+                break;
+            }
+        }
+
+        // Direction dropdown
+        auto *dirCombo = new QComboBox(m_comObjTable);
+        dirCombo->addItem(tr("Senden"),   static_cast<int>(ComObjectLink::Direction::Send));
+        dirCombo->addItem(tr("Empfangen"), static_cast<int>(ComObjectLink::Direction::Receive));
+        dirCombo->setCurrentIndex(currentDir == ComObjectLink::Direction::Receive ? 1 : 0);
+        connect(dirCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this, row](int){ onComObjectLinkChanged(row); });
+        m_comObjTable->setCellWidget(row, 3, dirCombo);
+
         // GA dropdown: lists all project group addresses + "(keine)"
-        auto *combo = new QComboBox(m_comObjTable);
-        combo->addItem(tr("(keine)"), QString());
+        auto *gaCombo = new QComboBox(m_comObjTable);
+        gaCombo->addItem(tr("(keine)"), QString());
         if (m_project) {
             for (const GroupAddress &ga : m_project->groupAddresses()) {
                 if (!ga.dpt().isEmpty() && ga.dpt() != co.dpt)
                     continue;  // filter by matching DPT
-                combo->addItem(QStringLiteral("%1 – %2").arg(ga.toString(), ga.name()),
-                               ga.toString());
+                gaCombo->addItem(QStringLiteral("%1 – %2").arg(ga.toString(), ga.name()),
+                                 ga.toString());
             }
         }
 
-        // Preselect currently linked GA
-        QString linkedGa;
-        for (const ComObjectLink &link : m_device->links()) {
-            if (link.comObjectId == co.id && link.ga.isValid()) {
-                linkedGa = link.ga.toString();
-                break;
-            }
-        }
-        const int idx = combo->findData(linkedGa);
-        combo->setCurrentIndex(idx >= 0 ? idx : 0);
+        const int idx = gaCombo->findData(linkedGa);
+        gaCombo->setCurrentIndex(idx >= 0 ? idx : 0);
 
-        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+        connect(gaCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this, row](int){ onComObjectLinkChanged(row); });
 
-        m_comObjTable->setCellWidget(row, 3, combo);
+        m_comObjTable->setCellWidget(row, 4, gaCombo);
     }
 
     m_comObjTable->resizeColumnsToContents();
@@ -225,17 +237,23 @@ void DeviceEditorWidget::onComObjectLinkChanged(int row)
         return;
 
     const QString comObjectId = m_device->appProgram()->comObjects[row].id;
-    auto *combo = qobject_cast<QComboBox *>(m_comObjTable->cellWidget(row, 3));
-    if (!combo)
+    auto *dirCombo = qobject_cast<QComboBox *>(m_comObjTable->cellWidget(row, 3));
+    auto *gaCombo  = qobject_cast<QComboBox *>(m_comObjTable->cellWidget(row, 4));
+    if (!gaCombo)
         return;
 
-    const QString gaString = combo->currentData().toString();
+    const QString gaString = gaCombo->currentData().toString();
+    const auto direction = (dirCombo && dirCombo->currentData().toInt() ==
+                            static_cast<int>(ComObjectLink::Direction::Receive))
+                           ? ComObjectLink::Direction::Receive
+                           : ComObjectLink::Direction::Send;
 
     // Update or create link entry
     bool found = false;
     for (ComObjectLink &link : m_device->links()) {
         if (link.comObjectId == comObjectId) {
-            link.ga = gaString.isEmpty() ? GroupAddress() : GroupAddress::fromString(gaString);
+            link.ga        = gaString.isEmpty() ? GroupAddress() : GroupAddress::fromString(gaString);
+            link.direction = direction;
             found = true;
             break;
         }
@@ -243,7 +261,8 @@ void DeviceEditorWidget::onComObjectLinkChanged(int row)
     if (!found) {
         ComObjectLink link;
         link.comObjectId = comObjectId;
-        link.ga = gaString.isEmpty() ? GroupAddress() : GroupAddress::fromString(gaString);
+        link.ga          = gaString.isEmpty() ? GroupAddress() : GroupAddress::fromString(gaString);
+        link.direction   = direction;
         m_device->addLink(link);
     }
 

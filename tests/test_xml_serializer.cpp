@@ -1,8 +1,11 @@
 #include <QtTest>
 #include <QTemporaryFile>
+#include <QStandardPaths>
 #include "Project.h"
 #include "TopologyNode.h"
 #include "DeviceInstance.h"
+#include "GroupAddress.h"
+#include "ComObjectLink.h"
 #include "KnxprojSerializer.h"
 
 class TestKnxprojSerializer : public QObject
@@ -130,6 +133,101 @@ private slots:
 
         QVERIFY(KnxprojSerializer::save(proj, path));
         QCOMPARE(proj.knxprojId(), id1); // same ID on second save
+    }
+
+    void deviceDescriptionRoundtrip()
+    {
+        Project orig;
+        orig.setName(QStringLiteral("DescTest"));
+
+        auto area = std::make_unique<TopologyNode>(TopologyNode::Type::Area, 1, QStringLiteral("Bereich 1"));
+        auto line = std::make_unique<TopologyNode>(TopologyNode::Type::Line, 1, QStringLiteral("Linie 1"));
+
+        auto dev = std::make_unique<DeviceInstance>(
+            QStringLiteral("d1"), QStringLiteral("prod-ref"), QStringLiteral("app-ref"));
+        dev->setPhysicalAddress(QStringLiteral("1.1.1"));
+        dev->setDescription(QStringLiteral("Schaltaktor Wohnzimmer"));
+
+        line->addDevice(std::move(dev));
+        area->addChild(std::move(line));
+        orig.addArea(std::move(area));
+
+        QTemporaryFile tmp;
+        tmp.setFileTemplate(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                            + QStringLiteral("/desc-XXXXXX.knxproj"));
+        QVERIFY(tmp.open());
+        const QString path = tmp.fileName();
+        tmp.close();
+
+        QVERIFY(KnxprojSerializer::save(orig, path));
+
+        auto loaded = KnxprojSerializer::load(path);
+        QVERIFY(loaded != nullptr);
+        QCOMPARE(loaded->areaCount(), 1);
+
+        DeviceInstance *dev2 = loaded->areaAt(0)->childAt(0)->deviceAt(0);
+        QVERIFY(dev2 != nullptr);
+        QCOMPARE(dev2->description(), QStringLiteral("Schaltaktor Wohnzimmer"));
+    }
+
+    void comObjectDirectionRoundtrip()
+    {
+        Project orig;
+        orig.setName(QStringLiteral("DirTest"));
+
+        auto area = std::make_unique<TopologyNode>(TopologyNode::Type::Area, 1, QStringLiteral("A"));
+        auto line = std::make_unique<TopologyNode>(TopologyNode::Type::Line, 1, QStringLiteral("L"));
+
+        auto dev = std::make_unique<DeviceInstance>(
+            QStringLiteral("d1"), QStringLiteral("prod-ref"), QStringLiteral("app-ref"));
+        dev->setPhysicalAddress(QStringLiteral("1.1.1"));
+
+        orig.addGroupAddress(GroupAddress(0, 0, 1, QStringLiteral("GA1"), QStringLiteral("1.001")));
+        orig.addGroupAddress(GroupAddress(0, 0, 2, QStringLiteral("GA2"), QStringLiteral("1.001")));
+
+        ComObjectLink sendLink;
+        sendLink.comObjectId = QStringLiteral("co_out");
+        sendLink.ga          = GroupAddress::fromString(QStringLiteral("0/0/1"));
+        sendLink.direction   = ComObjectLink::Direction::Send;
+        dev->addLink(sendLink);
+
+        ComObjectLink recvLink;
+        recvLink.comObjectId = QStringLiteral("co_status");
+        recvLink.ga          = GroupAddress::fromString(QStringLiteral("0/0/2"));
+        recvLink.direction   = ComObjectLink::Direction::Receive;
+        dev->addLink(recvLink);
+
+        line->addDevice(std::move(dev));
+        area->addChild(std::move(line));
+        orig.addArea(std::move(area));
+
+        QTemporaryFile tmp;
+        tmp.setFileTemplate(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                            + QStringLiteral("/dir-XXXXXX.knxproj"));
+        QVERIFY(tmp.open());
+        const QString path = tmp.fileName();
+        tmp.close();
+
+        QVERIFY(KnxprojSerializer::save(orig, path));
+
+        auto loaded = KnxprojSerializer::load(path);
+        QVERIFY(loaded != nullptr);
+
+        DeviceInstance *dev2 = loaded->areaAt(0)->childAt(0)->deviceAt(0);
+        QVERIFY(dev2 != nullptr);
+        QCOMPARE(dev2->links().size(), 2);
+
+        // Find each link by comObjectId and verify direction is preserved
+        ComObjectLink::Direction sendDir = ComObjectLink::Direction::Receive;
+        ComObjectLink::Direction recvDir = ComObjectLink::Direction::Send;
+        for (const ComObjectLink &lnk : dev2->links()) {
+            if (lnk.comObjectId == QStringLiteral("co_out"))
+                sendDir = lnk.direction;
+            else if (lnk.comObjectId == QStringLiteral("co_status"))
+                recvDir = lnk.direction;
+        }
+        QCOMPARE(sendDir, ComObjectLink::Direction::Send);
+        QCOMPARE(recvDir, ComObjectLink::Direction::Receive);
     }
 };
 

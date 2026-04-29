@@ -26,6 +26,9 @@ public:
     QString physicalAddress() const { return m_physAddr; }
     void    setPhysicalAddress(const QString &addr) { m_physAddr = addr; }
 
+    QString description() const { return m_description; }
+    void    setDescription(const QString &desc) { m_description = desc; }
+
     // Parameter values keyed by parameter id.
     // std::map is used instead of QMap because Qt 6.4 requires nothrow-destructible
     // value types for Qt containers, and QVariant does not guarantee that.
@@ -47,6 +50,7 @@ private:
     QString                                  m_productRefId;
     QString                                  m_appProgramRefId;
     QString                                  m_physAddr;
+    QString                                  m_description;
     std::map<QString, QVariant>              m_params;
     QList<ComObjectLink>                     m_links;
     std::shared_ptr<KnxApplicationProgram>   m_appProgram;

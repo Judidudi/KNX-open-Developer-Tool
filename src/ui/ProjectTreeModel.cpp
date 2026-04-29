@@ -77,10 +77,13 @@ void ProjectTreeModel::rebuild()
             for (int d = 0; d < line->deviceCount(); ++d) {
                 DeviceInstance *dev = line->deviceAt(d);
                 auto devNode = std::make_unique<Node>();
-                devNode->kind    = Device;
+                devNode->kind = Device;
+                const QString displayName = dev->description().isEmpty()
+                                                ? dev->productRefId()
+                                                : dev->description();
                 devNode->label   = dev->physicalAddress().isEmpty()
-                                       ? tr("(neu) %1").arg(dev->productRefId())
-                                       : tr("%1 – %2").arg(dev->physicalAddress(), dev->productRefId());
+                                       ? tr("(neu) %1").arg(displayName)
+                                       : tr("%1 – %2").arg(dev->physicalAddress(), displayName);
                 devNode->details = dev->productRefId();
                 devNode->rawPtr  = dev;
                 ln->addChild(std::move(devNode));
