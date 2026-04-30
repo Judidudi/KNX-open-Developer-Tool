@@ -17,6 +17,8 @@ add_library(knxodt_ui STATIC
     BusMonitorModel.cpp
     GroupMonitorWidget.h
     GroupMonitorWidget.cpp
+    UndoCommands.h
+    UndoCommands.cpp
     ProgramDialog.h
     ProgramDialog.cpp
     PropertiesPanel.h

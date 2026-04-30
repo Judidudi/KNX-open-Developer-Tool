@@ -4,6 +4,7 @@
 #include "DeviceEditorWidget.h"
 #include "BusMonitorWidget.h"
 #include "GroupMonitorWidget.h"
+#include "UndoCommands.h"
 #include "ProgramDialog.h"
 #include "PropertiesPanel.h"
 #include "dialogs/NewProjectDialog.h"
@@ -28,6 +29,7 @@
 #include <QMenuBar>
 #include <QToolBar>
 #include <QStatusBar>
+#include <QUndoStack>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QLabel>
@@ -50,6 +52,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_project    = std::make_unique<Project>();
     m_catalog    = std::make_unique<KnxprodCatalog>();
     m_interfaces = std::make_unique<InterfaceManager>();
+    m_undoStack  = new QUndoStack(this);
 
     setupCentralWidget();
     setupMenuBar();
@@ -63,6 +66,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_busMonitor->setInterfaceManager(m_interfaces.get());
     m_groupMonitor->setInterfaceManager(m_interfaces.get());
     m_groupMonitor->setProject(m_project.get());
+    m_propertiesPanel->setProject(m_project.get());
+    m_propertiesPanel->setInterfaceManager(m_interfaces.get());
 
     connect(m_interfaces.get(), &InterfaceManager::connected,
             this, &MainWindow::onInterfaceConnected);
@@ -123,6 +128,12 @@ void MainWindow::setupMenuBar()
     fileMenu->addAction(tr("Katalogdatei &importieren…"), this, &MainWindow::onImportCatalogFile);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("&Beenden"), qApp, &QApplication::quit, QKeySequence::Quit);
+
+    QMenu *editMenu = menuBar()->addMenu(tr("&Bearbeiten"));
+    editMenu->addAction(m_undoStack->createUndoAction(this, tr("&Rückgängig")));
+    editMenu->addAction(m_undoStack->createRedoAction(this, tr("&Wiederholen")));
+    editMenu->actions().at(0)->setShortcut(QKeySequence::Undo);
+    editMenu->actions().at(1)->setShortcut(QKeySequence::Redo);
 
     QMenu *projectMenu = menuBar()->addMenu(tr("&Projekt"));
     m_actAddGroupAddr = projectMenu->addAction(tr("Gruppenadresse hinzufügen…"),
@@ -298,9 +309,11 @@ void MainWindow::newProject()
 
     m_currentFilePath.clear();
     m_modified = false;
+    m_undoStack->clear();
 
     m_projectTree->setProject(m_project.get());
     m_groupMonitor->setProject(m_project.get());
+    m_propertiesPanel->setProject(m_project.get());
     m_deviceEditor->clearDevice();
     m_propertiesPanel->clearSelection();
     updateWindowTitle();
@@ -328,9 +341,11 @@ void MainWindow::openProject()
     m_project = std::move(loaded);
     m_currentFilePath = path;
     m_modified = false;
+    m_undoStack->clear();
 
     m_projectTree->setProject(m_project.get());
     m_groupMonitor->setProject(m_project.get());
+    m_propertiesPanel->setProject(m_project.get());
     m_deviceEditor->clearDevice();
     m_propertiesPanel->clearSelection();
     updateWindowTitle();
@@ -377,7 +392,7 @@ void MainWindow::addGroupAddress()
             tr("Die Adresse %1 ist im Projekt bereits vorhanden.").arg(ga.toString()));
         return;
     }
-    m_project->addGroupAddress(ga);
+    m_undoStack->push(new AddGroupAddressCommand(m_project.get(), ga));
     m_projectTree->refresh();
     refreshGroupMonitor();
     markModified();
@@ -684,18 +699,17 @@ void MainWindow::onDeleteAreaRequested(TopologyNode *area)
 
     for (int i = 0; i < m_project->areaCount(); ++i) {
         if (m_project->areaAt(i) == area) {
-            m_project->removeAreaAt(i);
-            break;
+            if (m_selectedDevice) {
+                m_selectedDevice = nullptr;
+                m_deviceEditor->clearDevice();
+                m_propertiesPanel->clearSelection();
+            }
+            m_undoStack->push(new DeleteAreaCommand(m_project.get(), i));
+            m_projectTree->refresh();
+            markModified();
+            return;
         }
     }
-
-    if (m_selectedDevice) {
-        m_selectedDevice = nullptr;
-        m_deviceEditor->clearDevice();
-        m_propertiesPanel->clearSelection();
-    }
-    m_projectTree->refresh();
-    markModified();
 }
 
 void MainWindow::onDeleteLineRequested(TopologyNode *line)
@@ -708,35 +722,34 @@ void MainWindow::onDeleteLineRequested(TopologyNode *line)
 
     TopologyNode *area = line->parent();
     const int idx = area->indexOfChild(line);
-    if (idx >= 0)
-        area->removeChildAt(idx);
-
-    if (m_selectedDevice) {
-        m_selectedDevice = nullptr;
-        m_deviceEditor->clearDevice();
-        m_propertiesPanel->clearSelection();
+    if (idx >= 0) {
+        if (m_selectedDevice) {
+            m_selectedDevice = nullptr;
+            m_deviceEditor->clearDevice();
+            m_propertiesPanel->clearSelection();
+        }
+        m_undoStack->push(new DeleteLineCommand(area, idx));
+        m_projectTree->refresh();
+        markModified();
     }
-    m_projectTree->refresh();
-    markModified();
 }
 
 void MainWindow::onDeleteDeviceRequested(DeviceInstance *dev)
 {
     if (!dev) return;
 
-    // Find which line owns this device
     for (int a = 0; a < m_project->areaCount(); ++a) {
         TopologyNode *area = m_project->areaAt(a);
         for (int l = 0; l < area->childCount(); ++l) {
             TopologyNode *line = area->childAt(l);
             const int idx = line->indexOfDevice(dev);
             if (idx >= 0) {
-                line->removeDeviceAt(idx);
                 if (m_selectedDevice == dev) {
                     m_selectedDevice = nullptr;
                     m_deviceEditor->clearDevice();
                     m_propertiesPanel->clearSelection();
                 }
+                m_undoStack->push(new DeleteDeviceCommand(line, idx));
                 m_projectTree->refresh();
                 markModified();
                 return;
@@ -817,7 +830,9 @@ void MainWindow::onDeleteGroupAddressRequested(GroupAddress *ga)
         QMessageBox::Yes | QMessageBox::Cancel);
     if (btn != QMessageBox::Yes) return;
 
-    m_project->removeGroupAddress(ga->toString());
+    const int idx = m_project->groupAddresses().indexOf(*ga);
+    if (idx >= 0)
+        m_undoStack->push(new DeleteGroupAddressCommand(m_project.get(), idx));
     m_projectTree->refresh();
     refreshGroupMonitor();
     markModified();

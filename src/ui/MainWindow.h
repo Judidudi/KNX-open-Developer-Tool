@@ -21,6 +21,7 @@ class PropertiesPanel;
 class QStackedWidget;
 class QLabel;
 class QAction;
+class QUndoStack;
 
 class MainWindow : public QMainWindow
 {
@@ -96,10 +97,11 @@ private:
     QStackedWidget     *m_centerStack     = nullptr;
     PropertiesPanel    *m_propertiesPanel = nullptr;
 
-    QLabel  *m_connectionStatusLabel = nullptr;
-    QString  m_currentFilePath;
-    QString  m_writableCatalogPath;
-    bool     m_modified = false;
+    QLabel      *m_connectionStatusLabel = nullptr;
+    QString      m_currentFilePath;
+    QString      m_writableCatalogPath;
+    bool         m_modified = false;
+    QUndoStack  *m_undoStack = nullptr;
 
     DeviceInstance *m_selectedDevice = nullptr;
 
