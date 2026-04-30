@@ -52,6 +52,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent)
     m_devTypeLabel->setWordWrap(true);
     devForm->addRow(tr("Typ:"), m_devTypeLabel);
 
+    m_devNameEdit = new QLineEdit(m_devicePage);
+    m_devNameEdit->setPlaceholderText(tr("Bezeichnung"));
+    devForm->addRow(tr("Bezeichnung:"), m_devNameEdit);
+
     m_devPhysEdit = new QLineEdit(m_devicePage);
     m_devPhysEdit->setPlaceholderText(tr("z.B. 1.1.1"));
     devForm->addRow(tr("Phys. Adresse:"), m_devPhysEdit);
@@ -95,6 +99,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent)
 
     setWidget(m_stack);
 
+    connect(m_devNameEdit, &QLineEdit::editingFinished,
+            this, &PropertiesPanel::onDevDescEdited);
     connect(m_devPhysEdit, &QLineEdit::editingFinished,
             this, &PropertiesPanel::onPhysAddrEdited);
     connect(m_gaNameEdit, &QLineEdit::editingFinished,
@@ -112,7 +118,8 @@ void PropertiesPanel::showDevice(DeviceInstance *device)
         return;
     }
     m_updating = true;
-    m_devTypeLabel->setText(device->catalogRef());
+    m_devTypeLabel->setText(device->productRefId());
+    m_devNameEdit->setText(device->description());
     m_devPhysEdit->setText(device->physicalAddress());
     m_updating = false;
     m_stack->setCurrentIndex(1);
@@ -139,6 +146,14 @@ void PropertiesPanel::clearSelection()
     m_currentDevice = nullptr;
     m_currentGa = nullptr;
     m_stack->setCurrentIndex(0);
+}
+
+void PropertiesPanel::onDevDescEdited()
+{
+    if (m_updating || !m_currentDevice)
+        return;
+    m_currentDevice->setDescription(m_devNameEdit->text().trimmed());
+    emit deviceModified();
 }
 
 void PropertiesPanel::onPhysAddrEdited()

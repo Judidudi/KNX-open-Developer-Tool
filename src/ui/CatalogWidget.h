@@ -3,9 +3,10 @@
 #include <QWidget>
 #include <memory>
 
-class DeviceCatalog;
+class KnxprodCatalog;
+class KnxApplicationProgram;
+struct KnxHardwareProduct;
 class CatalogModel;
-struct Manifest;
 
 class QListView;
 class QLineEdit;
@@ -19,14 +20,16 @@ class CatalogWidget : public QWidget
 public:
     explicit CatalogWidget(QWidget *parent = nullptr);
 
-    void setCatalog(DeviceCatalog *catalog);
+    void setCatalog(KnxprodCatalog *catalog);
 
-    // Returns the manifest currently selected in the list (or nullptr)
-    std::shared_ptr<Manifest> selectedManifest() const;
+    // Returns the product currently selected in the list (or nullptr)
+    const KnxHardwareProduct *selectedProduct() const;
 
 signals:
     // Emitted when the user double-clicks or presses the Add button
-    void addDeviceRequested(std::shared_ptr<Manifest> manifest);
+    void addDeviceRequested(const QString &productId,
+                            const QString &productName,
+                            std::shared_ptr<KnxApplicationProgram> appProgram);
 
 private slots:
     void onFilterChanged(const QString &text);
@@ -34,7 +37,7 @@ private slots:
     void onActivated();
 
 private:
-    DeviceCatalog         *m_catalog    = nullptr;
+    KnxprodCatalog        *m_catalog    = nullptr;
     CatalogModel          *m_model      = nullptr;
     QSortFilterProxyModel *m_proxy      = nullptr;
     QListView             *m_view       = nullptr;

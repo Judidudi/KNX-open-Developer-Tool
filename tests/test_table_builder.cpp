@@ -3,7 +3,15 @@
 #include "DeviceInstance.h"
 #include "ComObjectLink.h"
 #include "GroupAddress.h"
-#include "Manifest.h"
+#include "KnxApplicationProgram.h"
+
+static KnxApplicationProgram makeApp(const QString &id)
+{
+    KnxApplicationProgram app;
+    app.id   = id;
+    app.name = id;
+    return app;
+}
 
 class TestTableBuilder : public QObject
 {
@@ -12,15 +20,14 @@ class TestTableBuilder : public QObject
 private slots:
     void buildsAddressTableWithPaAndGas()
     {
-        Manifest m;
-        m.id      = QStringLiteral("dev");
-        m.version = QStringLiteral("1.0.0");
-        ManifestComObject co1; co1.id = QStringLiteral("co1"); co1.number = 0; co1.dpt = QStringLiteral("1.001");
-        ManifestComObject co2; co2.id = QStringLiteral("co2"); co2.number = 1; co2.dpt = QStringLiteral("1.001");
-        m.comObjects << co1 << co2;
-        m.memoryLayout.parameterSize = 0;
+        KnxApplicationProgram app = makeApp(QStringLiteral("dev"));
 
-        DeviceInstance dev(QStringLiteral("d1"), QStringLiteral("dev"), QStringLiteral("1.0.0"));
+        KnxComObject co1; co1.id = QStringLiteral("co1"); co1.number = 0; co1.dpt = QStringLiteral("1.001");
+        KnxComObject co2; co2.id = QStringLiteral("co2"); co2.number = 1; co2.dpt = QStringLiteral("1.001");
+        app.comObjects << co1 << co2;
+        app.memoryLayout.parameterSize = 0;
+
+        DeviceInstance dev(QStringLiteral("d1"), QStringLiteral("dev"), QStringLiteral("dev"));
         dev.setPhysicalAddress(QStringLiteral("1.1.5"));
 
         ComObjectLink l1;
@@ -33,7 +40,7 @@ private slots:
         l2.ga = GroupAddress(0, 0, 2, QStringLiteral("GA2"), QStringLiteral("1.001"));
         dev.addLink(l2);
 
-        DeviceMemoryImage img = TableBuilder::build(dev, m);
+        DeviceMemoryImage img = TableBuilder::build(dev, app);
 
         // addressTable: [count_hi][count_lo] [PA] [GA1] [GA2]
         QCOMPARE(img.addressTable.size(), 2 + 2 * 3);   // 2 header + 3 entries * 2 bytes
@@ -45,14 +52,12 @@ private slots:
 
     void buildsAssociationTableEntries()
     {
-        Manifest m;
-        m.id = QStringLiteral("dev");
-        m.version = QStringLiteral("1.0.0");
-        ManifestComObject co; co.id = QStringLiteral("co1"); co.number = 7;
-        m.comObjects << co;
-        m.memoryLayout.parameterSize = 0;
+        KnxApplicationProgram app = makeApp(QStringLiteral("dev"));
+        KnxComObject co; co.id = QStringLiteral("co1"); co.number = 7;
+        app.comObjects << co;
+        app.memoryLayout.parameterSize = 0;
 
-        DeviceInstance dev(QStringLiteral("d1"), QStringLiteral("dev"), QStringLiteral("1.0.0"));
+        DeviceInstance dev(QStringLiteral("d1"), QStringLiteral("dev"), QStringLiteral("dev"));
         dev.setPhysicalAddress(QStringLiteral("1.1.1"));
 
         ComObjectLink l;
@@ -60,7 +65,7 @@ private slots:
         l.ga = GroupAddress(0, 0, 1);
         dev.addLink(l);
 
-        DeviceMemoryImage img = TableBuilder::build(dev, m);
+        DeviceMemoryImage img = TableBuilder::build(dev, app);
 
         // associationTable: [count_hi][count_lo] [ga_idx][co_number]
         QCOMPARE(img.associationTable.size(), 4);
@@ -71,28 +76,23 @@ private slots:
 
     void packsParameterValuesAtDeclaredOffset()
     {
-        Manifest m;
-        m.id      = QStringLiteral("dev");
-        m.version = QStringLiteral("1.0.0");
-        ManifestParameter p1;
-        p1.id = QStringLiteral("p1");
-        p1.type = QStringLiteral("uint16");
-        p1.memoryOffset = 0;
-        p1.size = 2;
-        ManifestParameter p2;
-        p2.id = QStringLiteral("p2");
-        p2.type = QStringLiteral("uint8");
-        p2.memoryOffset = 2;
-        p2.size = 1;
-        m.parameters.push_back(p1);
-        m.parameters.push_back(p2);
-        m.memoryLayout.parameterSize = 4;
+        KnxApplicationProgram app = makeApp(QStringLiteral("dev"));
 
-        DeviceInstance dev(QStringLiteral("d1"), QStringLiteral("dev"), QStringLiteral("1.0.0"));
+        KnxParameterType t1; t1.id = QStringLiteral("uint16"); t1.kind = KnxParameterType::Kind::UInt; t1.size = 2;
+        KnxParameterType t2; t2.id = QStringLiteral("uint8");  t2.kind = KnxParameterType::Kind::UInt; t2.size = 1;
+        app.paramTypes.insert(t1.id, t1);
+        app.paramTypes.insert(t2.id, t2);
+
+        KnxParameter p1; p1.id = QStringLiteral("p1"); p1.typeId = QStringLiteral("uint16"); p1.offset = 0;
+        KnxParameter p2; p2.id = QStringLiteral("p2"); p2.typeId = QStringLiteral("uint8");  p2.offset = 2;
+        app.parameters << p1 << p2;
+        app.memoryLayout.parameterSize = 4;
+
+        DeviceInstance dev(QStringLiteral("d1"), QStringLiteral("dev"), QStringLiteral("dev"));
         dev.parameters()[QStringLiteral("p1")] = 0x1234;
         dev.parameters()[QStringLiteral("p2")] = 0xAB;
 
-        DeviceMemoryImage img = TableBuilder::build(dev, m);
+        DeviceMemoryImage img = TableBuilder::build(dev, app);
         QCOMPARE(img.parameterBlock.size(), 4);
         // Little-endian uint16 at offset 0: 0x34 0x12
         QCOMPARE(static_cast<uint8_t>(img.parameterBlock[0]), uint8_t(0x34));

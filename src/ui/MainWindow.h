@@ -1,13 +1,15 @@
 #pragma once
 
+#include "BuildingPart.h"
 #include <QMainWindow>
 #include <memory>
 
 class Project;
-class DeviceCatalog;
+class KnxprodCatalog;
+class KnxApplicationProgram;
 class DeviceInstance;
 class GroupAddress;
-struct Manifest;
+class TopologyNode;
 
 class InterfaceManager;
 class ProjectTreeWidget;
@@ -36,7 +38,9 @@ private slots:
     void saveProject();
     void saveProjectAs();
     void addGroupAddress();
-    void onAddDeviceRequested(std::shared_ptr<Manifest> manifest);
+    void onAddDeviceRequested(const QString &productId,
+                              const QString &productName,
+                              std::shared_ptr<KnxApplicationProgram> appProgram);
     void onDeviceSelected(DeviceInstance *device);
     void onGroupAddressSelected(GroupAddress *ga);
     void onConnectClicked();
@@ -46,6 +50,24 @@ private slots:
     void onInterfaceConnected();
     void onInterfaceDisconnected();
     void onInterfaceError(const QString &message);
+
+    // G1: Topology management
+    void onAddAreaRequested();
+    void onAddLineRequested(TopologyNode *area);
+    void onDeleteAreaRequested(TopologyNode *area);
+    void onDeleteLineRequested(TopologyNode *line);
+    void onDeleteDeviceRequested(DeviceInstance *dev);
+
+    // G1: Group address management
+    void onAddMainGroupRequested();
+    void onAddMiddleGroupRequested(int mainGroup);
+    void onAddGroupAddressRequested(int mainGroup, int middleGroup);
+    void onDeleteGroupAddressRequested(GroupAddress *ga);
+
+    // G2: Building management
+    void onAddBuildingRequested();
+    void onAddBuildingChildRequested(BuildingPart *parent, BuildingPart::Type childType);
+    void onDeleteBuildingPartRequested(BuildingPart *bp);
 
 private:
     void setupMenuBar();
@@ -59,13 +81,13 @@ private:
     void updateConnectionUi();
 
     std::unique_ptr<Project>          m_project;
-    std::unique_ptr<DeviceCatalog>    m_catalog;
+    std::unique_ptr<KnxprodCatalog>   m_catalog;
     std::unique_ptr<InterfaceManager> m_interfaces;
 
-    ProjectTreeWidget  *m_projectTree  = nullptr;
-    DeviceEditorWidget *m_deviceEditor = nullptr;
-    BusMonitorWidget   *m_busMonitor   = nullptr;
-    QStackedWidget     *m_centerStack  = nullptr;
+    ProjectTreeWidget  *m_projectTree     = nullptr;
+    DeviceEditorWidget *m_deviceEditor    = nullptr;
+    BusMonitorWidget   *m_busMonitor      = nullptr;
+    QStackedWidget     *m_centerStack     = nullptr;
     PropertiesPanel    *m_propertiesPanel = nullptr;
 
     QLabel  *m_connectionStatusLabel = nullptr;
@@ -74,11 +96,11 @@ private:
 
     DeviceInstance *m_selectedDevice = nullptr;
 
-    QAction *m_actSave          = nullptr;
-    QAction *m_actSaveAs        = nullptr;
-    QAction *m_actConnect       = nullptr;
-    QAction *m_actDisconnect    = nullptr;
-    QAction *m_actProgram       = nullptr;
-    QAction *m_actBusMonitor    = nullptr;
-    QAction *m_actAddGroupAddr  = nullptr;
+    QAction *m_actSave         = nullptr;
+    QAction *m_actSaveAs       = nullptr;
+    QAction *m_actConnect      = nullptr;
+    QAction *m_actDisconnect   = nullptr;
+    QAction *m_actProgram      = nullptr;
+    QAction *m_actBusMonitor   = nullptr;
+    QAction *m_actAddGroupAddr = nullptr;
 };

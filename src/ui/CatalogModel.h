@@ -3,36 +3,37 @@
 #include <QAbstractListModel>
 #include <memory>
 
-class DeviceCatalog;
-struct Manifest;
+class KnxprodCatalog;
+class KnxApplicationProgram;
+struct KnxHardwareProduct;
 
-// Flat list model over a DeviceCatalog.
-// Each row represents one device manifest; shows localized name + manufacturer.
+// Flat list model over a KnxprodCatalog.
+// Each row represents one hardware product; shows product name + manufacturer.
 class CatalogModel : public QAbstractListModel
 {
     Q_OBJECT
 
 public:
     enum Roles {
-        ManifestIdRole = Qt::UserRole + 1,
-        ManifestPtrRole,
+        ProductIdRole  = Qt::UserRole + 1,
+        ProductPtrRole,
     };
 
     explicit CatalogModel(QObject *parent = nullptr);
     ~CatalogModel() override;
 
-    void           setCatalog(DeviceCatalog *catalog);
-    DeviceCatalog *catalog() const { return m_catalog; }
+    void            setCatalog(KnxprodCatalog *catalog);
+    KnxprodCatalog *catalog() const { return m_catalog; }
 
     void reload();
 
-    // Convenience: returns manifest at given model index (or nullptr)
-    std::shared_ptr<Manifest> manifestAt(const QModelIndex &index) const;
+    // Returns product entry at given model index (or nullptr)
+    const KnxHardwareProduct *productAt(const QModelIndex &index) const;
 
     // QAbstractListModel
     int      rowCount(const QModelIndex &parent = {}) const override;
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
 
 private:
-    DeviceCatalog *m_catalog = nullptr;
+    KnxprodCatalog *m_catalog = nullptr;
 };

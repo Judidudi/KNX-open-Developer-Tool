@@ -11,6 +11,21 @@ void TopologyNode::addChild(std::unique_ptr<TopologyNode> child)
     m_children.push_back(std::move(child));
 }
 
+void TopologyNode::removeChildAt(int index)
+{
+    if (index >= 0 && index < static_cast<int>(m_children.size()))
+        m_children.erase(m_children.begin() + index);
+}
+
+int TopologyNode::indexOfChild(const TopologyNode *child) const
+{
+    for (int i = 0; i < static_cast<int>(m_children.size()); ++i) {
+        if (m_children[i].get() == child)
+            return i;
+    }
+    return -1;
+}
+
 TopologyNode *TopologyNode::childAt(int index)
 {
     if (index < 0 || index >= m_children.size())
@@ -46,14 +61,29 @@ void TopologyNode::addDevice(std::unique_ptr<DeviceInstance> device)
     m_devices.push_back(std::move(device));
 }
 
+void TopologyNode::removeDeviceAt(int index)
+{
+    if (index >= 0 && index < static_cast<int>(m_devices.size()))
+        m_devices.erase(m_devices.begin() + index);
+}
+
 DeviceInstance *TopologyNode::deviceAt(int index)
 {
-    if (index < 0 || index >= m_devices.size())
+    if (index < 0 || index >= static_cast<int>(m_devices.size()))
         return nullptr;
     return m_devices[index].get();
 }
 
 int TopologyNode::deviceCount() const
 {
-    return m_devices.size();
+    return static_cast<int>(m_devices.size());
+}
+
+int TopologyNode::indexOfDevice(const DeviceInstance *dev) const
+{
+    for (int i = 0; i < static_cast<int>(m_devices.size()); ++i) {
+        if (m_devices[i].get() == dev)
+            return i;
+    }
+    return -1;
 }

@@ -2,7 +2,7 @@
 
 #include "Project.h"
 #include "DeviceInstance.h"
-#include "Manifest.h"
+#include "KnxApplicationProgram.h"
 #include "GroupAddress.h"
 #include "ComObjectLink.h"
 
@@ -15,6 +15,8 @@
 #include <QComboBox>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QScrollArea>
+#include <QScrollBar>
 
 DeviceEditorWidget::DeviceEditorWidget(QWidget *parent)
     : QWidget(parent)
@@ -29,17 +31,21 @@ DeviceEditorWidget::DeviceEditorWidget(QWidget *parent)
     m_tabs = new QTabWidget(this);
     layout->addWidget(m_tabs);
 
-    m_paramTab  = new QWidget(m_tabs);
-    m_comObjTab = new QWidget(m_tabs);
-    m_tabs->addTab(m_paramTab,  tr("Parameter"));
-    m_tabs->addTab(m_comObjTab, tr("Kommunikationsobjekte"));
-
+    // Parameter tab: wrap in a QScrollArea so visibility rebuilds don't change window size
+    m_paramTab = new QWidget(this);
     m_paramLayout = new QFormLayout(m_paramTab);
+    auto *paramScroll = new QScrollArea(m_tabs);
+    paramScroll->setWidgetResizable(true);
+    paramScroll->setWidget(m_paramTab);
+    m_tabs->addTab(paramScroll, tr("Parameter"));
+
+    m_comObjTab = new QWidget(m_tabs);
+    m_tabs->addTab(m_comObjTab, tr("Kommunikationsobjekte"));
 
     auto *comLayout = new QVBoxLayout(m_comObjTab);
     m_comObjTable = new QTableWidget(m_comObjTab);
-    m_comObjTable->setColumnCount(4);
-    m_comObjTable->setHorizontalHeaderLabels({tr("Name"), tr("DPT"), tr("Flags"), tr("Gruppenadresse")});
+    m_comObjTable->setColumnCount(5);
+    m_comObjTable->setHorizontalHeaderLabels({tr("Name"), tr("DPT"), tr("Flags"), tr("Richtung"), tr("Gruppenadresse")});
     m_comObjTable->horizontalHeader()->setStretchLastSection(true);
     m_comObjTable->verticalHeader()->setVisible(false);
     m_comObjTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -64,14 +70,14 @@ void DeviceEditorWidget::setDevice(DeviceInstance *device, Project *project)
     m_project = project;
     clearTabs();
 
-    if (!m_device || !m_device->manifest()) {
-        m_title->setText(tr("Manifest nicht gefunden: %1").arg(m_device ? m_device->catalogRef() : QString()));
+    if (!m_device || !m_device->appProgram()) {
+        m_title->setText(tr("Anwendungsprogramm nicht gefunden: %1").arg(m_device ? m_device->productRefId() : QString()));
         return;
     }
 
-    const Manifest *m = m_device->manifest();
+    const KnxApplicationProgram *app = m_device->appProgram();
     m_title->setText(tr("%1 – %2 (%3)")
-                         .arg(m_device->physicalAddress(), m->name.get(), m_device->catalogRef()));
+                         .arg(m_device->physicalAddress(), app->name, m_device->productRefId()));
 
     buildParameterTab();
     buildComObjectTab();
@@ -93,27 +99,50 @@ void DeviceEditorWidget::clearTabs()
     m_comObjTable->setRowCount(0);
 }
 
+bool DeviceEditorWidget::isParameterVisible(const KnxParameter &p) const
+{
+    if (p.access == KnxParameter::Access::Hidden)
+        return false;
+
+    if (!p.conditionParamId.isEmpty()) {
+        const auto it = m_device->parameters().find(p.conditionParamId);
+        const QVariant cur = (it != m_device->parameters().end()) ? it->second : QVariant(0);
+        const bool eq = (cur.toString() == p.conditionValue.toString());
+        if (p.conditionOp == KnxParameter::ConditionOp::Equal && !eq)
+            return false;
+        if (p.conditionOp == KnxParameter::ConditionOp::NotEqual && eq)
+            return false;
+    }
+    return true;
+}
+
 void DeviceEditorWidget::buildParameterTab()
 {
     m_updating = true;
-    const Manifest *m = m_device->manifest();
+    const KnxApplicationProgram *app = m_device->appProgram();
 
-    for (const ManifestParameter &p : m->parameters) {
+    int visibleCount = 0;
+    for (const KnxParameter &p : app->parameters) {
+        if (!isParameterVisible(p))
+            continue;
+
+        ++visibleCount;
         auto paramIt = m_device->parameters().find(p.id);
         const QVariant currentValue = (paramIt != m_device->parameters().end()) ? paramIt->second : p.defaultValue;
+        const KnxParameterType *pt = app->findType(p.typeId);
         QWidget *editor = nullptr;
 
-        if (p.type == QLatin1String("bool")) {
+        if (pt && pt->kind == KnxParameterType::Kind::Bool) {
             auto *cb = new QCheckBox(m_paramTab);
             cb->setChecked(currentValue.toInt() != 0);
             connect(cb, &QCheckBox::toggled, this, &DeviceEditorWidget::onParameterChanged);
             editor = cb;
-        } else if (p.type == QLatin1String("enum")) {
+        } else if (pt && pt->kind == KnxParameterType::Kind::Enum) {
             auto *combo = new QComboBox(m_paramTab);
             int selectedIdx = 0;
-            for (int i = 0; i < p.enumValues.size(); ++i) {
-                const auto &ev = p.enumValues[i];
-                combo->addItem(ev.label.get(), ev.value);
+            for (int i = 0; i < pt->enumValues.size(); ++i) {
+                const auto &ev = pt->enumValues[i];
+                combo->addItem(ev.text, ev.value);
                 if (ev.value == currentValue.toInt())
                     selectedIdx = i;
             }
@@ -121,18 +150,12 @@ void DeviceEditorWidget::buildParameterTab()
             connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                     this, &DeviceEditorWidget::onParameterChanged);
             editor = combo;
-        } else { // uint8/uint16/uint32 – default numeric editor
+        } else {
             auto *spin = new QSpinBox(m_paramTab);
-            const int minV = p.rangeMin.isValid() ? p.rangeMin.toInt() : 0;
-            int maxV = 65535;
-            if (p.rangeMax.isValid())               maxV = p.rangeMax.toInt();
-            else if (p.type == QLatin1String("uint8"))  maxV = 255;
-            else if (p.type == QLatin1String("uint16")) maxV = 65535;
-            else if (p.type == QLatin1String("uint32")) maxV = 2147483647;
+            const int minV = pt ? pt->minValue : 0;
+            const int maxV = pt ? pt->maxValue : 65535;
             spin->setRange(minV, maxV);
             spin->setValue(currentValue.toInt());
-            if (!p.unit.isEmpty())
-                spin->setSuffix(QStringLiteral(" %1").arg(p.unit));
             connect(spin, QOverload<int>::of(&QSpinBox::valueChanged),
                     this, &DeviceEditorWidget::onParameterChanged);
             editor = spin;
@@ -140,56 +163,92 @@ void DeviceEditorWidget::buildParameterTab()
 
         editor->setProperty("paramId", p.id);
         m_paramWidgets.insert(p.id, editor);
-        m_paramLayout->addRow(p.name.get() + QStringLiteral(":"), editor);
+        m_paramLayout->addRow(p.name + QStringLiteral(":"), editor);
     }
 
-    if (m->parameters.empty())
-        m_paramLayout->addRow(new QLabel(tr("Dieses Gerät hat keine Parameter."), m_paramTab));
+    if (visibleCount == 0)
+        m_paramLayout->addRow(new QLabel(tr("Dieses Gerät hat keine sichtbaren Parameter."), m_paramTab));
 
     m_updating = false;
+}
+
+void DeviceEditorWidget::rebuildParameterTab()
+{
+    // Preserve scroll position across rebuild
+    QScrollArea *scroll = nullptr;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if ((scroll = qobject_cast<QScrollArea *>(m_tabs->widget(i))))
+            break;
+    }
+    const int scrollValue = scroll ? scroll->verticalScrollBar()->value() : 0;
+
+    m_paramWidgets.clear();
+    while (m_paramLayout->count() > 0) {
+        QLayoutItem *item = m_paramLayout->takeAt(0);
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+
+    buildParameterTab();
+
+    if (scroll)
+        scroll->verticalScrollBar()->setValue(scrollValue);
 }
 
 void DeviceEditorWidget::buildComObjectTab()
 {
     m_updating = true;
-    const Manifest *m = m_device->manifest();
+    const KnxApplicationProgram *app = m_device->appProgram();
 
-    m_comObjTable->setRowCount(m->comObjects.size());
+    m_comObjTable->setRowCount(app->comObjects.size());
 
-    for (int row = 0; row < m->comObjects.size(); ++row) {
-        const ManifestComObject &co = m->comObjects[row];
+    for (int row = 0; row < app->comObjects.size(); ++row) {
+        const KnxComObject &co = app->comObjects[row];
 
-        m_comObjTable->setItem(row, 0, new QTableWidgetItem(co.name.get()));
+        m_comObjTable->setItem(row, 0, new QTableWidgetItem(co.name));
         m_comObjTable->setItem(row, 1, new QTableWidgetItem(co.dpt));
         m_comObjTable->setItem(row, 2, new QTableWidgetItem(co.flags.join(QString())));
 
+        // Find currently linked state for this ComObject
+        ComObjectLink::Direction currentDir = ComObjectLink::Direction::Send;
+        QString linkedGa;
+        for (const ComObjectLink &link : m_device->links()) {
+            if (link.comObjectId == co.id && link.ga.isValid()) {
+                linkedGa   = link.ga.toString();
+                currentDir = link.direction;
+                break;
+            }
+        }
+
+        // Direction dropdown
+        auto *dirCombo = new QComboBox(m_comObjTable);
+        dirCombo->addItem(tr("Senden"),   static_cast<int>(ComObjectLink::Direction::Send));
+        dirCombo->addItem(tr("Empfangen"), static_cast<int>(ComObjectLink::Direction::Receive));
+        dirCombo->setCurrentIndex(currentDir == ComObjectLink::Direction::Receive ? 1 : 0);
+        connect(dirCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this, row](int){ onComObjectLinkChanged(row); });
+        m_comObjTable->setCellWidget(row, 3, dirCombo);
+
         // GA dropdown: lists all project group addresses + "(keine)"
-        auto *combo = new QComboBox(m_comObjTable);
-        combo->addItem(tr("(keine)"), QString());
+        auto *gaCombo = new QComboBox(m_comObjTable);
+        gaCombo->addItem(tr("(keine)"), QString());
         if (m_project) {
             for (const GroupAddress &ga : m_project->groupAddresses()) {
                 if (!ga.dpt().isEmpty() && ga.dpt() != co.dpt)
                     continue;  // filter by matching DPT
-                combo->addItem(QStringLiteral("%1 – %2").arg(ga.toString(), ga.name()),
-                               ga.toString());
+                gaCombo->addItem(QStringLiteral("%1 – %2").arg(ga.toString(), ga.name()),
+                                 ga.toString());
             }
         }
 
-        // Preselect currently linked GA
-        QString linkedGa;
-        for (const ComObjectLink &link : m_device->links()) {
-            if (link.comObjectId == co.id && link.ga.isValid()) {
-                linkedGa = link.ga.toString();
-                break;
-            }
-        }
-        const int idx = combo->findData(linkedGa);
-        combo->setCurrentIndex(idx >= 0 ? idx : 0);
+        const int idx = gaCombo->findData(linkedGa);
+        gaCombo->setCurrentIndex(idx >= 0 ? idx : 0);
 
-        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+        connect(gaCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this, row](int){ onComObjectLinkChanged(row); });
 
-        m_comObjTable->setCellWidget(row, 3, combo);
+        m_comObjTable->setCellWidget(row, 4, gaCombo);
     }
 
     m_comObjTable->resizeColumnsToContents();
@@ -219,28 +278,49 @@ void DeviceEditorWidget::onParameterChanged()
         newValue = combo->currentData();
 
     m_device->parameters()[id] = newValue;
+
+    // Check if any parameter uses this one as a condition — if so, rebuild tab.
+    const KnxApplicationProgram *app = m_device->appProgram();
+    if (app) {
+        bool needsRebuild = false;
+        for (const KnxParameter &p : app->parameters) {
+            if (p.conditionParamId == id) {
+                needsRebuild = true;
+                break;
+            }
+        }
+        if (needsRebuild)
+            rebuildParameterTab();
+    }
+
     emit deviceModified();
 }
 
 void DeviceEditorWidget::onComObjectLinkChanged(int row)
 {
-    if (m_updating || !m_device || !m_device->manifest())
+    if (m_updating || !m_device || !m_device->appProgram())
         return;
-    if (row < 0 || row >= m_device->manifest()->comObjects.size())
-        return;
-
-    const QString comObjectId = m_device->manifest()->comObjects[row].id;
-    auto *combo = qobject_cast<QComboBox *>(m_comObjTable->cellWidget(row, 3));
-    if (!combo)
+    if (row < 0 || row >= m_device->appProgram()->comObjects.size())
         return;
 
-    const QString gaString = combo->currentData().toString();
+    const QString comObjectId = m_device->appProgram()->comObjects[row].id;
+    auto *dirCombo = qobject_cast<QComboBox *>(m_comObjTable->cellWidget(row, 3));
+    auto *gaCombo  = qobject_cast<QComboBox *>(m_comObjTable->cellWidget(row, 4));
+    if (!gaCombo)
+        return;
+
+    const QString gaString = gaCombo->currentData().toString();
+    const auto direction = (dirCombo && dirCombo->currentData().toInt() ==
+                            static_cast<int>(ComObjectLink::Direction::Receive))
+                           ? ComObjectLink::Direction::Receive
+                           : ComObjectLink::Direction::Send;
 
     // Update or create link entry
     bool found = false;
     for (ComObjectLink &link : m_device->links()) {
         if (link.comObjectId == comObjectId) {
-            link.ga = gaString.isEmpty() ? GroupAddress() : GroupAddress::fromString(gaString);
+            link.ga        = gaString.isEmpty() ? GroupAddress() : GroupAddress::fromString(gaString);
+            link.direction = direction;
             found = true;
             break;
         }
@@ -248,7 +328,8 @@ void DeviceEditorWidget::onComObjectLinkChanged(int row)
     if (!found) {
         ComObjectLink link;
         link.comObjectId = comObjectId;
-        link.ga = gaString.isEmpty() ? GroupAddress() : GroupAddress::fromString(gaString);
+        link.ga          = gaString.isEmpty() ? GroupAddress() : GroupAddress::fromString(gaString);
+        link.direction   = direction;
         m_device->addLink(link);
     }
 

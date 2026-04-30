@@ -25,6 +25,7 @@ signals:
     void groupAddressModified();
 
 private slots:
+    void onDevDescEdited();
     void onPhysAddrEdited();
     void onGaNameEdited();
     void onGaDptEdited();
@@ -35,6 +36,7 @@ private:
     // Page 1: Device
     QWidget   *m_devicePage     = nullptr;
     QLabel    *m_devTypeLabel   = nullptr;
+    QLineEdit *m_devNameEdit    = nullptr;
     QLineEdit *m_devPhysEdit    = nullptr;
 
     // Page 2: GroupAddress

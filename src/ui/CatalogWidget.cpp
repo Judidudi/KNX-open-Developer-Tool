@@ -1,8 +1,8 @@
 #include "CatalogWidget.h"
 
 #include "CatalogModel.h"
-#include "DeviceCatalog.h"
-#include "Manifest.h"
+#include "KnxprodCatalog.h"
+#include "KnxApplicationProgram.h"
 
 #include <QVBoxLayout>
 #include <QLabel>
@@ -42,24 +42,24 @@ CatalogWidget::CatalogWidget(QWidget *parent)
 
     connect(m_filterEdit, &QLineEdit::textChanged, this, &CatalogWidget::onFilterChanged);
     connect(m_addButton,  &QPushButton::clicked,   this, &CatalogWidget::onAddClicked);
-    connect(m_view,       &QListView::doubleClicked, this, [this](const QModelIndex &){ onActivated(); });
+    connect(m_view, &QListView::doubleClicked, this, [this](const QModelIndex &){ onActivated(); });
     connect(m_view->selectionModel(), &QItemSelectionModel::selectionChanged,
-            this, [this](){ m_addButton->setEnabled(selectedManifest() != nullptr); });
+            this, [this](){ m_addButton->setEnabled(selectedProduct() != nullptr); });
 }
 
-void CatalogWidget::setCatalog(DeviceCatalog *catalog)
+void CatalogWidget::setCatalog(KnxprodCatalog *catalog)
 {
     m_catalog = catalog;
     m_model->setCatalog(catalog);
 }
 
-std::shared_ptr<Manifest> CatalogWidget::selectedManifest() const
+const KnxHardwareProduct *CatalogWidget::selectedProduct() const
 {
     const QModelIndexList sel = m_view->selectionModel()->selectedIndexes();
     if (sel.isEmpty())
         return nullptr;
     const QModelIndex src = m_proxy->mapToSource(sel.first());
-    return m_model->manifestAt(src);
+    return m_model->productAt(src);
 }
 
 void CatalogWidget::onFilterChanged(const QString &text)
@@ -74,6 +74,7 @@ void CatalogWidget::onAddClicked()
 
 void CatalogWidget::onActivated()
 {
-    if (auto m = selectedManifest())
-        emit addDeviceRequested(m);
+    const KnxHardwareProduct *p = selectedProduct();
+    if (p && p->appProgram)
+        emit addDeviceRequested(p->productId, p->productName, p->appProgram);
 }
