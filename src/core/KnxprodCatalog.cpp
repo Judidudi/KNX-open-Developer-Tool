@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QXmlStreamReader>
+#include <QDebug>
 
 // ─── Hardware XML parser ──────────────────────────────────────────────────────
 
@@ -14,35 +15,62 @@ struct HwInfo {
     QString appProgramRefId;
 };
 
-static HwInfo parseHardwareXml(const QByteArray &xml)
+// Parse a hardware XML file and return all products it describes.
+// ETS6 hardware XMLs may contain multiple <Hardware> blocks (multi-variant products).
+static QList<HwInfo> parseHardwareXml(const QByteArray &xml)
 {
-    HwInfo info;
-    QXmlStreamReader rd(xml);
+    QList<HwInfo> results;
+    QString manufacturer;
+    HwInfo current;
+    QString currentHwName;
 
+    QXmlStreamReader rd(xml);
     while (!rd.atEnd()) {
-        if (rd.readNext() != QXmlStreamReader::StartElement)
+        const auto token = rd.readNext();
+
+        if (token == QXmlStreamReader::EndElement) {
+            // Commit product entry when leaving a Hardware block that has a product
+            if (rd.name() == QLatin1String("Hardware") && !current.productId.isEmpty()) {
+                current.manufacturer = manufacturer;
+                if (current.productName.isEmpty())
+                    current.productName = currentHwName;
+                results.append(current);
+                current = {};
+                currentHwName.clear();
+            }
             continue;
+        }
+        if (token != QXmlStreamReader::StartElement)
+            continue;
+
         const QStringView n = rd.name();
 
         if (n == QLatin1String("Manufacturer")) {
-            info.manufacturer = rd.attributes().value(QLatin1String("RefId")).toString();
+            manufacturer = rd.attributes().value(QLatin1String("RefId")).toString();
 
         } else if (n == QLatin1String("Hardware")) {
-            // The inner <Hardware> (not the wrapper)
             const QString hwId = rd.attributes().value(QLatin1String("Id")).toString();
-            if (!hwId.isEmpty() && info.productName.isEmpty())
-                info.productName = rd.attributes().value(QLatin1String("Name")).toString();
+            if (!hwId.isEmpty())
+                currentHwName = rd.attributes().value(QLatin1String("Name")).toString();
 
         } else if (n == QLatin1String("Product")) {
-            info.productId   = rd.attributes().value(QLatin1String("Id")).toString();
-            if (info.productName.isEmpty())
-                info.productName = rd.attributes().value(QLatin1String("Text")).toString();
+            current.productId = rd.attributes().value(QLatin1String("Id")).toString();
+            if (current.productName.isEmpty())
+                current.productName = rd.attributes().value(QLatin1String("Text")).toString();
 
         } else if (n == QLatin1String("ApplicationProgramRef")) {
-            info.appProgramRefId = rd.attributes().value(QLatin1String("RefId")).toString();
+            const QString ref = rd.attributes().value(QLatin1String("RefId")).toString();
+            if (!ref.isEmpty())
+                current.appProgramRefId = ref;
+
+        } else if (n == QLatin1String("Hardware2ProgrammeVersion")) {
+            // ETS6 standard manufacturer format
+            const QString ref = rd.attributes().value(QLatin1String("ApplicationProgramRefId")).toString();
+            if (!ref.isEmpty())
+                current.appProgramRefId = ref;
         }
     }
-    return info;
+    return results;
 }
 
 // ─── ApplicationProgram XML parser ───────────────────────────────────────────
@@ -51,7 +79,6 @@ static HwInfo parseHardwareXml(const QByteArray &xml)
 // "DPST-1-1" → "1.001", "DPT-5" → "DPT-5" (kept), "1.001" → "1.001" (kept).
 static QString normalizeDpt(const QString &raw)
 {
-    // DPST-<main>-<sub>  →  <main>.<sub padded to 3 digits>
     if (raw.startsWith(QLatin1String("DPST-"))) {
         const QStringList parts = raw.mid(5).split(QLatin1Char('-'));
         if (parts.size() >= 2) {
@@ -65,10 +92,39 @@ static QString normalizeDpt(const QString &raw)
     return raw;
 }
 
+// Parse flag attributes from a ComObject or ComObjectRef element.
+// Returns the flags list if any flag attribute is present; returns empty list if none found.
+static QStringList parseFlagAttributes(const QXmlStreamAttributes &attrs, bool &hadFlagAttrs)
+{
+    const QString flagStr = attrs.value(QLatin1String("CommunicationFlag")).toString();
+    if (!flagStr.isEmpty()) {
+        hadFlagAttrs = true;
+        return flagStr.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    }
+    const auto enabled = QLatin1String("Enabled");
+    QStringList flags;
+    hadFlagAttrs = false;
+    const auto check = [&](const char *attrName, const char *letter) {
+        const auto val = attrs.value(QLatin1String(attrName));
+        if (!val.isEmpty()) {
+            hadFlagAttrs = true;
+            if (val == enabled)
+                flags.append(QLatin1String(letter));
+        }
+    };
+    check("CommunicationObjectEnable", "C");
+    check("ReadFlag",     "R");
+    check("WriteFlag",    "W");
+    check("TransmitFlag", "T");
+    check("UpdateFlag",   "U");
+    return flags;
+}
+
 struct ParamRefInfo {
-    QString paramId;                // actual Parameter.Id (from RefId attribute)
+    QString paramId;
     KnxParameter::Access access = KnxParameter::Access::ReadWrite;
-    QString conditionRefId;         // ParameterRef.Id of the condition source param
+    QString name;                // display name override
+    QString conditionRefId;
     QVariant conditionValue;
     KnxParameter::ConditionOp conditionOp = KnxParameter::ConditionOp::Equal;
 };
@@ -78,16 +134,14 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
     auto prog = std::make_shared<KnxApplicationProgram>();
     QXmlStreamReader rd(xml);
 
-    // Depth counter: incremented for <Static>, <ParameterBlock>, <ChannelIndependentBlock>;
-    // parameters and ComObjects are parsed whenever insideParamContext > 0.
     int insideParamContext = 0;
     KnxParameterType currentPT;
     bool inPT = false;
-    // Track the largest AbsoluteSegment seen (some manufacturers emit several small ones).
     quint32 bestSegSize = 0;
 
-    // ParameterRef data collected during parsing; resolved into prog->parameters after loop.
-    QMap<QString, ParamRefInfo> paramRefs; // key: ParameterRef.Id
+    QMap<QString, ParamRefInfo> paramRefs;    // key: ParameterRef.Id
+    QMap<QString, KnxComObject> coBase;       // key: ComObject.Id — base definitions
+    QList<KnxComObject> coFinal;              // merged ComObjectRef entries (ETS6 style)
 
     while (!rd.atEnd()) {
         const auto token = rd.readNext();
@@ -142,14 +196,13 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
                 currentPT.kind = KnxParameterType::Kind::UInt;
             currentPT.minValue = rd.attributes().value(QLatin1String("minInclusive")).toInt();
             currentPT.maxValue = rd.attributes().value(QLatin1String("maxInclusive")).toInt();
-            // SizeByte is a custom attribute we write; standard readers ignore it
             const QString sb = rd.attributes().value(QLatin1String("SizeByte")).toString();
             if (!sb.isEmpty())
                 currentPT.size = static_cast<uint8_t>(sb.toUInt());
-            else if (currentPT.maxValue <= 1)       currentPT.size = 1;
-            else if (currentPT.maxValue <= 255)     currentPT.size = 1;
-            else if (currentPT.maxValue <= 65535)   currentPT.size = 2;
-            else                                    currentPT.size = 4;
+            else if (currentPT.maxValue <= 1)     currentPT.size = 1;
+            else if (currentPT.maxValue <= 255)   currentPT.size = 1;
+            else if (currentPT.maxValue <= 65535) currentPT.size = 2;
+            else                                  currentPT.size = 4;
 
         } else if (n == QLatin1String("TypeRestriction") && inPT) {
             currentPT.kind = KnxParameterType::Kind::Enum;
@@ -167,7 +220,6 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
                     n == QLatin1String("TypeIPAddress") ||
                     n == QLatin1String("TypeDate") ||
                     n == QLatin1String("TypeTime"))) {
-            // Unknown type children — safe fallback to 4-byte UInt
             currentPT.kind = KnxParameterType::Kind::UInt;
             currentPT.size = 4;
 
@@ -179,7 +231,6 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
             p.typeId = rd.attributes().value(QLatin1String("ParameterType")).toString();
             bool ok  = false;
             p.offset = rd.attributes().value(QLatin1String("Offset")).toString().toUInt(&ok);
-            // Default value is in the <Value> child text – read it now
             while (!rd.atEnd()) {
                 rd.readNext();
                 if (rd.isEndElement() && rd.name() == QLatin1String("Parameter"))
@@ -190,13 +241,13 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
             prog->parameters.append(p);
 
         } else if (n == QLatin1String("ParameterRef") && insideParamContext > 0) {
-            // Collect access and condition info; applied to parameters after the loop.
             const QString refId   = rd.attributes().value(QLatin1String("Id")).toString();
             const QString paramId = rd.attributes().value(QLatin1String("RefId")).toString();
             const QString access  = rd.attributes().value(QLatin1String("Access")).toString();
 
             ParamRefInfo info;
             info.paramId = paramId;
+            info.name    = rd.attributes().value(QLatin1String("Name")).toString();
             if (access == QLatin1String("Hidden"))
                 info.access = KnxParameter::Access::Hidden;
             else if (access == QLatin1String("ReadOnly"))
@@ -204,7 +255,6 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
             else
                 info.access = KnxParameter::Access::ReadWrite;
 
-            // Read optional <Conditions><Condition><ConditionValue> children
             while (!rd.atEnd()) {
                 rd.readNext();
                 if (rd.isEndElement() && rd.name() == QLatin1String("ParameterRef"))
@@ -224,36 +274,48 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
             if (!refId.isEmpty() && !paramId.isEmpty())
                 paramRefs.insert(refId, info);
 
-        } else if (n == QLatin1String("ComObject") && insideParamContext > 0) {
+        } else if (n == QLatin1String("ComObject")) {
+            // Collect base ComObject definitions. Not guarded by insideParamContext so that
+            // <ComObject> elements inside <ComObjectTable> (which may be outside <Static>)
+            // are also captured.
             KnxComObject co;
             const QString origId = rd.attributes().value(QLatin1String("OriginalId")).toString();
             co.id     = origId.isEmpty() ? rd.attributes().value(QLatin1String("Id")).toString() : origId;
             co.number = rd.attributes().value(QLatin1String("Number")).toInt();
             co.name   = rd.attributes().value(QLatin1String("Name")).toString();
             co.dpt    = normalizeDpt(rd.attributes().value(QLatin1String("DatapointType")).toString());
-            // Support both combined "C,W,T" and individual flag attributes (real manufacturer files)
-            const QString flagStr = rd.attributes().value(QLatin1String("CommunicationFlag")).toString();
-            if (!flagStr.isEmpty()) {
-                co.flags = flagStr.split(QLatin1Char(','), Qt::SkipEmptyParts);
-            } else {
-                const auto enabled = QLatin1String("Enabled");
-                if (rd.attributes().value(QLatin1String("CommunicationObjectEnable")).toString() == enabled)
-                    co.flags.append(QStringLiteral("C"));
-                if (rd.attributes().value(QLatin1String("ReadFlag")).toString() == enabled)
-                    co.flags.append(QStringLiteral("R"));
-                if (rd.attributes().value(QLatin1String("WriteFlag")).toString() == enabled)
-                    co.flags.append(QStringLiteral("W"));
-                if (rd.attributes().value(QLatin1String("TransmitFlag")).toString() == enabled)
-                    co.flags.append(QStringLiteral("T"));
-                if (rd.attributes().value(QLatin1String("UpdateFlag")).toString() == enabled)
-                    co.flags.append(QStringLiteral("U"));
-            }
-            prog->comObjects.append(co);
+            bool hadFlags = false;
+            co.flags = parseFlagAttributes(rd.attributes(), hadFlags);
+            if (!co.id.isEmpty())
+                coBase.insert(co.id, co);
+
+        } else if (n == QLatin1String("ComObjectRef")) {
+            // ETS6 style: ComObjectRef provides display name / DPT / flag overrides.
+            const QString refId = rd.attributes().value(QLatin1String("RefId")).toString();
+
+            // Start from the base ComObject; if not found, create a shell with refId as id.
+            KnxComObject co = coBase.value(refId);
+            if (co.id.isEmpty())
+                co.id = refId;
+
+            const QString nameOverride = rd.attributes().value(QLatin1String("Name")).toString();
+            if (!nameOverride.isEmpty())
+                co.name = nameOverride;
+
+            const QString dptOverride = normalizeDpt(rd.attributes().value(QLatin1String("DatapointType")).toString());
+            if (!dptOverride.isEmpty())
+                co.dpt = dptOverride;
+
+            bool hadFlags = false;
+            const QStringList flagOverride = parseFlagAttributes(rd.attributes(), hadFlags);
+            if (hadFlags)
+                co.flags = flagOverride;
+
+            coFinal.append(co);
         }
     }
 
-    // Apply ParameterRef access and conditions to the collected parameters.
-    // Build a reverse map: Parameter.Id → ParamRefInfo (first matching ref wins).
+    // Apply ParameterRef access, name override, and conditions to parameters.
     QMap<QString, ParamRefInfo> paramIdToRef;
     for (auto it = paramRefs.constBegin(); it != paramRefs.constEnd(); ++it) {
         if (!paramIdToRef.contains(it->paramId))
@@ -265,8 +327,9 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
             continue;
         const ParamRefInfo &info = *infoIt;
         p.access = info.access;
+        if (!info.name.isEmpty())
+            p.name = info.name;
         if (!info.conditionRefId.isEmpty()) {
-            // Resolve ParameterRef.Id of condition source → actual Parameter.Id
             const auto condRefIt = paramRefs.constFind(info.conditionRefId);
             if (condRefIt != paramRefs.constEnd())
                 p.conditionParamId = condRefIt->paramId;
@@ -274,6 +337,22 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
             p.conditionOp    = info.conditionOp;
         }
     }
+
+    // Finalize ComObjects:
+    // - If ComObjectRef entries were found, use them (ETS6 manufacturer format).
+    // - Otherwise use the base ComObject list sorted by number (our own format + some manufacturers).
+    if (!coFinal.isEmpty()) {
+        prog->comObjects = coFinal;
+    } else {
+        auto baseList = coBase.values();
+        std::sort(baseList.begin(), baseList.end(), [](const KnxComObject &a, const KnxComObject &b) {
+            return a.number < b.number;
+        });
+        prog->comObjects = baseList;
+    }
+
+    if (!prog->isValid())
+        qWarning() << "KnxprodCatalog: application program" << prog->id << "is invalid (no id or name)";
 
     return prog->isValid() ? prog : nullptr;
 }
@@ -298,57 +377,101 @@ void KnxprodCatalog::reload()
         if (!dir.exists())
             continue;
 
-        // Auto-convert .yaml → .knxprod is handled externally (MainWindow::loadCatalog).
-
         const QFileInfoList files = dir.entryInfoList({QStringLiteral("*.knxprod")}, QDir::Files);
         for (const QFileInfo &fi : files)
             loadKnxprod(fi.absoluteFilePath());
+
+        qDebug() << "KnxprodCatalog: scanned" << searchPath
+                 << "—" << files.size() << "file(s)," << m_products.size() << "product(s) total";
     }
 }
 
 bool KnxprodCatalog::loadKnxprod(const QString &path)
 {
     const auto entries = ZipUtils::readEntries(path);
-    if (entries.isEmpty())
+    if (entries.isEmpty()) {
+        qWarning() << "KnxprodCatalog: failed to read ZIP entries from" << path;
         return false;
+    }
 
-    // Find Hardware XML: entry name contains "_HP-"
-    // Find Application XML: entry name contains "_A-" but not "_AS-", "_AT-" etc.
-    QByteArray hwXml;
-    QByteArray appXml;
+    // Collect all Hardware Product XMLs (name contains "_HP-")
+    // and all Application XMLs (name contains "_A-" but not "_AS-" or "_AT-").
+    QList<QByteArray> hwXmls;
+    QMap<QString, QByteArray> appXmlsByName;    // key: entry name (for logging)
 
     for (auto it = entries.constBegin(); it != entries.constEnd(); ++it) {
         const QString &name = it.key();
-        if (name.endsWith(QLatin1String(".xml"))) {
-            if (name.contains(QLatin1String("_HP-")))
-                hwXml = it.value();
-            else if (name.contains(QLatin1String("_A-")) &&
-                     !name.contains(QLatin1String("_AS-")))
-                appXml = it.value();
+        if (!name.endsWith(QLatin1String(".xml")))
+            continue;
+        if (name.contains(QLatin1String("_HP-"))) {
+            hwXmls.append(it.value());
+        } else if (name.contains(QLatin1String("_A-")) &&
+                   !name.contains(QLatin1String("_AS-")) &&
+                   !name.contains(QLatin1String("_AT-"))) {
+            appXmlsByName.insert(name, it.value());
         }
     }
 
-    if (hwXml.isEmpty() || appXml.isEmpty())
+    if (hwXmls.isEmpty() || appXmlsByName.isEmpty()) {
+        qWarning() << "KnxprodCatalog: no Hardware or Application XML found in" << path;
         return false;
+    }
 
-    const HwInfo hw = parseHardwareXml(hwXml);
-    if (hw.productId.isEmpty() || hw.appProgramRefId.isEmpty())
+    // Parse all Application XMLs first, keyed by their ApplicationProgram id.
+    QMap<QString, std::shared_ptr<KnxApplicationProgram>> parsedApps;
+    for (auto it = appXmlsByName.constBegin(); it != appXmlsByName.constEnd(); ++it) {
+        auto prog = parseApplicationXml(it.value());
+        if (prog) {
+            parsedApps.insert(prog->id, prog);
+        } else {
+            qWarning() << "KnxprodCatalog: failed to parse Application XML" << it.key()
+                       << "in" << path;
+        }
+    }
+
+    if (parsedApps.isEmpty()) {
+        qWarning() << "KnxprodCatalog: no valid Application XMLs in" << path;
         return false;
+    }
 
-    auto appProg = parseApplicationXml(appXml);
-    if (!appProg)
+    // Process each Hardware XML — each may describe multiple products.
+    int loaded = 0;
+    for (const QByteArray &hwXml : hwXmls) {
+        const QList<HwInfo> hwList = parseHardwareXml(hwXml);
+        if (hwList.isEmpty()) {
+            qWarning() << "KnxprodCatalog: Hardware XML yielded no products in" << path;
+            continue;
+        }
+        for (const HwInfo &hw : hwList) {
+            if (hw.appProgramRefId.isEmpty()) {
+                qWarning() << "KnxprodCatalog: product" << hw.productId
+                           << "has no appProgramRefId in" << path;
+                continue;
+            }
+            auto appProg = parsedApps.value(hw.appProgramRefId);
+            if (!appProg) {
+                qWarning() << "KnxprodCatalog: appProgramRefId" << hw.appProgramRefId
+                           << "not found for product" << hw.productId << "in" << path;
+                continue;
+            }
+
+            m_appPrograms.insert(appProg->id, appProg);
+
+            KnxHardwareProduct product;
+            product.productId       = hw.productId;
+            product.productName     = hw.productName;
+            product.manufacturer    = hw.manufacturer;
+            product.appProgramRefId = hw.appProgramRefId;
+            product.appProgram      = appProg;
+            m_products.append(product);
+            ++loaded;
+        }
+    }
+
+    if (loaded == 0) {
+        qWarning() << "KnxprodCatalog: no products successfully loaded from" << path;
         return false;
-
-    m_appPrograms.insert(appProg->id, appProg);
-
-    KnxHardwareProduct product;
-    product.productId       = hw.productId;
-    product.productName     = hw.productName;
-    product.manufacturer    = hw.manufacturer;
-    product.appProgramRefId = hw.appProgramRefId;
-    product.appProgram      = appProg;
-    m_products.append(product);
-
+    }
     return true;
 }
 

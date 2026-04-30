@@ -15,8 +15,6 @@
 #include "BuildingPart.h"
 #include "KnxprodCatalog.h"
 #include "KnxApplicationProgram.h"
-#include "Manifest.h"
-#include "YamlToKnxprod.h"
 #include "KnxprojSerializer.h"
 #include "GroupAddress.h"
 
@@ -94,19 +92,6 @@ void MainWindow::loadCatalog()
     for (const QString &path : searchPaths) {
         QDir().mkpath(path);
         m_catalog->addSearchPath(path);
-
-        // Auto-convert any YAML manifests that don't have a .knxprod counterpart
-        const QDir dir(path);
-        for (const QString &yamlFile : dir.entryList({QStringLiteral("*.yaml")}, QDir::Files)) {
-            const QString knxprodPath = dir.absoluteFilePath(
-                QFileInfo(yamlFile).baseName() + QStringLiteral(".knxprod"));
-            if (!QFile::exists(knxprodPath)) {
-                const QString yamlPath = dir.absoluteFilePath(yamlFile);
-                auto manifest = loadManifest(yamlPath);
-                if (manifest.has_value())
-                    YamlToKnxprod::writeFile(*manifest, knxprodPath);
-            }
-        }
     }
 
     m_catalog->reload();
