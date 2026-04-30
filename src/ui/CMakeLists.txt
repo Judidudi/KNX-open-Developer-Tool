@@ -25,6 +25,8 @@ add_library(knxodt_ui STATIC
     dialogs/ConnectDialog.cpp
     dialogs/GroupAddressDialog.h
     dialogs/GroupAddressDialog.cpp
+    dialogs/LineScanDialog.h
+    dialogs/LineScanDialog.cpp
 )
 
 target_include_directories(knxodt_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

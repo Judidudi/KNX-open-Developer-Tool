@@ -45,6 +45,7 @@ private slots:
     void onGroupAddressSelected(GroupAddress *ga);
     void onConnectClicked();
     void onDisconnectClicked();
+    void onLineScanClicked();
     void onProgramClicked();
     void onShowBusMonitor();
     void onInterfaceConnected();
@@ -100,6 +101,7 @@ private:
     QAction *m_actSaveAs       = nullptr;
     QAction *m_actConnect      = nullptr;
     QAction *m_actDisconnect   = nullptr;
+    QAction *m_actLineScan     = nullptr;
     QAction *m_actProgram      = nullptr;
     QAction *m_actBusMonitor   = nullptr;
     QAction *m_actAddGroupAddr = nullptr;

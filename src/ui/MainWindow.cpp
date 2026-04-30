@@ -8,6 +8,7 @@
 #include "dialogs/NewProjectDialog.h"
 #include "dialogs/ConnectDialog.h"
 #include "dialogs/GroupAddressDialog.h"
+#include "dialogs/LineScanDialog.h"
 
 #include "Project.h"
 #include "TopologyNode.h"
@@ -126,6 +127,8 @@ void MainWindow::setupMenuBar()
     m_actConnect    = busMenu->addAction(tr("&Verbinden…"),     this, &MainWindow::onConnectClicked);
     m_actDisconnect = busMenu->addAction(tr("&Trennen"),         this, &MainWindow::onDisconnectClicked);
     m_actBusMonitor = busMenu->addAction(tr("&Busmonitor"),      this, &MainWindow::onShowBusMonitor);
+    busMenu->addSeparator();
+    m_actLineScan   = busMenu->addAction(tr("&Leitungsscan…"),   this, &MainWindow::onLineScanClicked);
     busMenu->addSeparator();
     m_actProgram    = busMenu->addAction(tr("Gerät &programmieren…"), this, &MainWindow::onProgramClicked);
 
@@ -476,6 +479,17 @@ void MainWindow::onShowBusMonitor()
     m_centerStack->setCurrentWidget(m_busMonitor);
 }
 
+void MainWindow::onLineScanClicked()
+{
+    if (!m_interfaces->isConnected()) {
+        QMessageBox::warning(this, tr("Nicht verbunden"),
+            tr("Bitte zuerst mit einem Bus-Interface verbinden."));
+        return;
+    }
+    LineScanDialog dlg(m_interfaces.get(), this);
+    dlg.exec();
+}
+
 void MainWindow::onProgramClicked()
 {
     if (!m_selectedDevice) {
@@ -530,6 +544,7 @@ void MainWindow::updateConnectionUi()
     const bool connected = m_interfaces && m_interfaces->isConnected();
     if (m_actConnect)    m_actConnect->setEnabled(!connected);
     if (m_actDisconnect) m_actDisconnect->setEnabled(connected);
+    if (m_actLineScan)   m_actLineScan->setEnabled(connected);
     if (m_actProgram)    m_actProgram->setEnabled(connected && m_selectedDevice != nullptr);
 
     if (m_connectionStatusLabel) {
