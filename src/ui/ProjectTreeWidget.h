@@ -58,6 +58,9 @@ signals:
     // Signals that something was modified (rename etc.)
     void projectModified();
 
+    // Emitted when user clicks "Katalogdatei importieren..." in catalog tab
+    void catalogImportRequested();
+
 public slots:
     // Called by the key event filters installed on each tree view
     void onTopoKeyPressed(int key, const QModelIndex &index);

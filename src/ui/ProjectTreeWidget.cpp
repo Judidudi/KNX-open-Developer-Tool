@@ -119,9 +119,11 @@ ProjectTreeWidget::ProjectTreeWidget(QWidget *parent)
     m_gaView->installEventFilter(new TreeKeyFilter(m_gaView, this));
     m_buildingView->installEventFilter(new TreeKeyFilter(m_buildingView, this));
 
-    // Forward catalog signal up to MainWindow
+    // Forward catalog signals up to MainWindow
     connect(m_catWidget, &CatalogWidget::addDeviceRequested,
             this,        &ProjectTreeWidget::addDeviceRequested);
+    connect(m_catWidget, &CatalogWidget::importRequested,
+            this,        &ProjectTreeWidget::catalogImportRequested);
 
     // Emit projectModified when inline rename succeeds (setData emits dataChanged with DisplayRole)
     connect(m_model, &ProjectTreeModel::dataChanged,

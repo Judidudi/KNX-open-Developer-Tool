@@ -3,6 +3,7 @@
 #include "ProjectTreeWidget.h"
 #include "DeviceEditorWidget.h"
 #include "BusMonitorWidget.h"
+#include "GroupMonitorWidget.h"
 #include "ProgramDialog.h"
 #include "PropertiesPanel.h"
 #include "dialogs/NewProjectDialog.h"
@@ -60,6 +61,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_projectTree->setProject(m_project.get());
     m_projectTree->setCatalog(m_catalog.get());
     m_busMonitor->setInterfaceManager(m_interfaces.get());
+    m_groupMonitor->setInterfaceManager(m_interfaces.get());
+    m_groupMonitor->setProject(m_project.get());
 
     connect(m_interfaces.get(), &InterfaceManager::connected,
             this, &MainWindow::onInterfaceConnected);
@@ -78,8 +81,8 @@ MainWindow::~MainWindow() = default;
 void MainWindow::loadCatalog()
 {
     const QDir appDir(QCoreApplication::applicationDirPath());
-    const QString userPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
-                             + QStringLiteral("/catalog/devices");
+    m_writableCatalogPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
+                            + QStringLiteral("/catalog/devices");
 
     QStringList searchPaths;
     const QString envPath = qEnvironmentVariable("KNXODT_CATALOG_PATH");
@@ -88,7 +91,7 @@ void MainWindow::loadCatalog()
     searchPaths << appDir.absoluteFilePath(QStringLiteral("catalog/devices"))
                 << appDir.absoluteFilePath(QStringLiteral("../catalog/devices"))
                 << appDir.absoluteFilePath(QStringLiteral("../../catalog/devices"))
-                << userPath;
+                << m_writableCatalogPath;
 
     for (const QString &path : searchPaths) {
         QDir().mkpath(path);
@@ -117,6 +120,8 @@ void MainWindow::setupMenuBar()
     m_actSaveAs->setShortcut(QKeySequence::SaveAs);
 
     fileMenu->addSeparator();
+    fileMenu->addAction(tr("Katalogdatei &importieren…"), this, &MainWindow::onImportCatalogFile);
+    fileMenu->addSeparator();
     fileMenu->addAction(tr("&Beenden"), qApp, &QApplication::quit, QKeySequence::Quit);
 
     QMenu *projectMenu = menuBar()->addMenu(tr("&Projekt"));
@@ -126,11 +131,12 @@ void MainWindow::setupMenuBar()
     QMenu *busMenu = menuBar()->addMenu(tr("&Bus"));
     m_actConnect    = busMenu->addAction(tr("&Verbinden…"),     this, &MainWindow::onConnectClicked);
     m_actDisconnect = busMenu->addAction(tr("&Trennen"),         this, &MainWindow::onDisconnectClicked);
-    m_actBusMonitor = busMenu->addAction(tr("&Busmonitor"),      this, &MainWindow::onShowBusMonitor);
+    m_actBusMonitor   = busMenu->addAction(tr("&Busmonitor"),          this, &MainWindow::onShowBusMonitor);
+    m_actGroupMonitor = busMenu->addAction(tr("&Gruppenadress-Monitor"), this, &MainWindow::onShowGroupMonitor);
     busMenu->addSeparator();
-    m_actLineScan   = busMenu->addAction(tr("&Leitungsscan…"),   this, &MainWindow::onLineScanClicked);
+    m_actLineScan     = busMenu->addAction(tr("&Leitungsscan…"),        this, &MainWindow::onLineScanClicked);
     busMenu->addSeparator();
-    m_actProgram    = busMenu->addAction(tr("Gerät &programmieren…"), this, &MainWindow::onProgramClicked);
+    m_actProgram      = busMenu->addAction(tr("Gerät &programmieren…"), this, &MainWindow::onProgramClicked);
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Hilfe"));
     helpMenu->addAction(tr("Über KNX open Developer Tool…"), this, [this](){
@@ -165,10 +171,12 @@ void MainWindow::setupCentralWidget()
     m_projectTree  = new ProjectTreeWidget(this);
     m_deviceEditor = new DeviceEditorWidget(this);
     m_busMonitor   = new BusMonitorWidget(this);
+    m_groupMonitor = new GroupMonitorWidget(this);
 
     m_centerStack = new QStackedWidget(this);
     m_centerStack->addWidget(m_deviceEditor);
     m_centerStack->addWidget(m_busMonitor);
+    m_centerStack->addWidget(m_groupMonitor);
     m_centerStack->setCurrentWidget(m_deviceEditor);
 
     auto *splitter = new QSplitter(Qt::Horizontal, this);
@@ -230,6 +238,10 @@ void MainWindow::setupCentralWidget()
     connect(m_projectTree, &ProjectTreeWidget::deleteGroupAddressRequested,
             this, &MainWindow::onDeleteGroupAddressRequested);
 
+    // Catalog import
+    connect(m_projectTree, &ProjectTreeWidget::catalogImportRequested,
+            this, &MainWindow::onImportCatalogFile);
+
     // G2: Building signals
     connect(m_projectTree, &ProjectTreeWidget::addBuildingRequested,
             this, &MainWindow::onAddBuildingRequested);
@@ -288,6 +300,7 @@ void MainWindow::newProject()
     m_modified = false;
 
     m_projectTree->setProject(m_project.get());
+    m_groupMonitor->setProject(m_project.get());
     m_deviceEditor->clearDevice();
     m_propertiesPanel->clearSelection();
     updateWindowTitle();
@@ -317,6 +330,7 @@ void MainWindow::openProject()
     m_modified = false;
 
     m_projectTree->setProject(m_project.get());
+    m_groupMonitor->setProject(m_project.get());
     m_deviceEditor->clearDevice();
     m_propertiesPanel->clearSelection();
     updateWindowTitle();
@@ -365,6 +379,7 @@ void MainWindow::addGroupAddress()
     }
     m_project->addGroupAddress(ga);
     m_projectTree->refresh();
+    refreshGroupMonitor();
     markModified();
 }
 
@@ -477,6 +492,51 @@ void MainWindow::onDisconnectClicked()
 void MainWindow::onShowBusMonitor()
 {
     m_centerStack->setCurrentWidget(m_busMonitor);
+}
+
+void MainWindow::onShowGroupMonitor()
+{
+    m_centerStack->setCurrentWidget(m_groupMonitor);
+}
+
+void MainWindow::refreshGroupMonitor()
+{
+    if (m_groupMonitor && m_project)
+        m_groupMonitor->setProject(m_project.get());
+}
+
+void MainWindow::onImportCatalogFile()
+{
+    const QString src = QFileDialog::getOpenFileName(
+        this, tr("Katalogdatei importieren"), QString(),
+        tr("KNX Produktdateien (*.knxprod);;Alle Dateien (*)"));
+    if (src.isEmpty())
+        return;
+
+    QDir().mkpath(m_writableCatalogPath);
+    const QString dst = m_writableCatalogPath + QStringLiteral("/")
+                        + QFileInfo(src).fileName();
+
+    if (QFile::exists(dst)) {
+        const auto btn = QMessageBox::question(this, tr("Datei bereits vorhanden"),
+            tr("Die Datei \"%1\" ist bereits im Katalog vorhanden. Überschreiben?")
+                .arg(QFileInfo(dst).fileName()),
+            QMessageBox::Yes | QMessageBox::Cancel);
+        if (btn != QMessageBox::Yes)
+            return;
+        QFile::remove(dst);
+    }
+
+    if (!QFile::copy(src, dst)) {
+        QMessageBox::critical(this, tr("Fehler"),
+            tr("Die Datei konnte nicht kopiert werden:\n%1").arg(src));
+        return;
+    }
+
+    m_catalog->reload();
+    m_projectTree->setCatalog(m_catalog.get());
+    const int count = m_catalog->count();
+    statusBar()->showMessage(tr("Katalog geladen: %1 Produkt(e)").arg(count));
 }
 
 void MainWindow::onLineScanClicked()
@@ -759,6 +819,7 @@ void MainWindow::onDeleteGroupAddressRequested(GroupAddress *ga)
 
     m_project->removeGroupAddress(ga->toString());
     m_projectTree->refresh();
+    refreshGroupMonitor();
     markModified();
 }
 

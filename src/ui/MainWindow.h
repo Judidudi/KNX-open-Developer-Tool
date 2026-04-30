@@ -15,6 +15,7 @@ class InterfaceManager;
 class ProjectTreeWidget;
 class DeviceEditorWidget;
 class BusMonitorWidget;
+class GroupMonitorWidget;
 class PropertiesPanel;
 
 class QStackedWidget;
@@ -48,6 +49,8 @@ private slots:
     void onLineScanClicked();
     void onProgramClicked();
     void onShowBusMonitor();
+    void onShowGroupMonitor();
+    void onImportCatalogFile();
     void onInterfaceConnected();
     void onInterfaceDisconnected();
     void onInterfaceError(const QString &message);
@@ -80,6 +83,7 @@ private:
     void markModified();
     bool maybeSave();
     void updateConnectionUi();
+    void refreshGroupMonitor();
 
     std::unique_ptr<Project>          m_project;
     std::unique_ptr<KnxprodCatalog>   m_catalog;
@@ -88,21 +92,24 @@ private:
     ProjectTreeWidget  *m_projectTree     = nullptr;
     DeviceEditorWidget *m_deviceEditor    = nullptr;
     BusMonitorWidget   *m_busMonitor      = nullptr;
+    GroupMonitorWidget *m_groupMonitor    = nullptr;
     QStackedWidget     *m_centerStack     = nullptr;
     PropertiesPanel    *m_propertiesPanel = nullptr;
 
     QLabel  *m_connectionStatusLabel = nullptr;
     QString  m_currentFilePath;
+    QString  m_writableCatalogPath;
     bool     m_modified = false;
 
     DeviceInstance *m_selectedDevice = nullptr;
 
-    QAction *m_actSave         = nullptr;
-    QAction *m_actSaveAs       = nullptr;
-    QAction *m_actConnect      = nullptr;
-    QAction *m_actDisconnect   = nullptr;
-    QAction *m_actLineScan     = nullptr;
-    QAction *m_actProgram      = nullptr;
-    QAction *m_actBusMonitor   = nullptr;
-    QAction *m_actAddGroupAddr = nullptr;
+    QAction *m_actSave           = nullptr;
+    QAction *m_actSaveAs         = nullptr;
+    QAction *m_actConnect        = nullptr;
+    QAction *m_actDisconnect     = nullptr;
+    QAction *m_actLineScan       = nullptr;
+    QAction *m_actProgram        = nullptr;
+    QAction *m_actBusMonitor     = nullptr;
+    QAction *m_actGroupMonitor   = nullptr;
+    QAction *m_actAddGroupAddr   = nullptr;
 };

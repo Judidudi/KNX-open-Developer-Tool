@@ -30,17 +30,21 @@ signals:
     void addDeviceRequested(const QString &productId,
                             const QString &productName,
                             std::shared_ptr<KnxApplicationProgram> appProgram);
+    // Emitted when the user clicks "Import .knxprod..."
+    void importRequested();
 
 private slots:
     void onFilterChanged(const QString &text);
     void onAddClicked();
     void onActivated();
+    void onImportClicked();
 
 private:
-    KnxprodCatalog        *m_catalog    = nullptr;
-    CatalogModel          *m_model      = nullptr;
-    QSortFilterProxyModel *m_proxy      = nullptr;
-    QListView             *m_view       = nullptr;
-    QLineEdit             *m_filterEdit = nullptr;
-    QPushButton           *m_addButton  = nullptr;
+    KnxprodCatalog        *m_catalog       = nullptr;
+    CatalogModel          *m_model         = nullptr;
+    QSortFilterProxyModel *m_proxy         = nullptr;
+    QListView             *m_view          = nullptr;
+    QLineEdit             *m_filterEdit    = nullptr;
+    QPushButton           *m_addButton     = nullptr;
+    QPushButton           *m_importButton  = nullptr;
 };
