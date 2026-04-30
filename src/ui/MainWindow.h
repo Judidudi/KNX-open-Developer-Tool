@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BuildingPart.h"
 #include <QMainWindow>
 #include <memory>
 
@@ -8,6 +9,7 @@ class KnxprodCatalog;
 class KnxApplicationProgram;
 class DeviceInstance;
 class GroupAddress;
+class TopologyNode;
 
 class InterfaceManager;
 class ProjectTreeWidget;
@@ -48,6 +50,24 @@ private slots:
     void onInterfaceConnected();
     void onInterfaceDisconnected();
     void onInterfaceError(const QString &message);
+
+    // G1: Topology management
+    void onAddAreaRequested();
+    void onAddLineRequested(TopologyNode *area);
+    void onDeleteAreaRequested(TopologyNode *area);
+    void onDeleteLineRequested(TopologyNode *line);
+    void onDeleteDeviceRequested(DeviceInstance *dev);
+
+    // G1: Group address management
+    void onAddMainGroupRequested();
+    void onAddMiddleGroupRequested(int mainGroup);
+    void onAddGroupAddressRequested(int mainGroup, int middleGroup);
+    void onDeleteGroupAddressRequested(GroupAddress *ga);
+
+    // G2: Building management
+    void onAddBuildingRequested();
+    void onAddBuildingChildRequested(BuildingPart *parent, BuildingPart::Type childType);
+    void onDeleteBuildingPartRequested(BuildingPart *bp);
 
 private:
     void setupMenuBar();

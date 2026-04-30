@@ -35,6 +35,17 @@ struct KnxParameter {
     QString  typeId;           // references KnxParameterType::id in the enclosing program
     uint32_t offset       = 0; // byte offset within parameter block
     QVariant defaultValue;
+
+    // Visibility (from <ParameterRef> in the .knxprod Application XML)
+    enum class Access { ReadWrite, ReadOnly, Hidden };
+    Access   access = Access::ReadWrite;
+
+    // Conditional visibility: visible only when conditionParamId's current value
+    // satisfies the condition (empty conditionParamId means always visible)
+    QString     conditionParamId;
+    QVariant    conditionValue;
+    enum class ConditionOp { Equal, NotEqual };
+    ConditionOp conditionOp = ConditionOp::Equal;
 };
 
 // ─── Communication object ─────────────────────────────────────────────────────

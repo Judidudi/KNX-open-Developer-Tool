@@ -7,6 +7,8 @@ add_library(knxodt_core STATIC
     DeviceInstance.cpp
     ComObjectLink.h
     ComObjectLink.cpp
+    BuildingPart.h
+    BuildingPart.cpp
     Manifest.h
     Manifest.cpp
     KnxApplicationProgram.h

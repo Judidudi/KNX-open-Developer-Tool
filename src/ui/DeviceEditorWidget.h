@@ -33,8 +33,11 @@ private slots:
 
 private:
     void buildParameterTab();
+    void rebuildParameterTab();
     void buildComObjectTab();
     void clearTabs();
+
+    bool isParameterVisible(const struct KnxParameter &p) const;
 
     Project        *m_project = nullptr;
     DeviceInstance *m_device  = nullptr;

@@ -5,6 +5,7 @@
 #include "DeviceInstance.h"
 #include "GroupAddress.h"
 #include "ComObjectLink.h"
+#include "BuildingPart.h"
 
 #include <QFile>
 #include <QXmlStreamWriter>
@@ -199,6 +200,38 @@ static QByteArray buildProject0xml(const Project &project)
     xml.writeEndElement(); // GroupRanges
     xml.writeEndElement(); // GroupAddresses
 
+    // ── Buildings ────────────────────────────────────────────────────────────
+    if (project.buildingCount() > 0) {
+        xml.writeStartElement(QStringLiteral("Buildings"));
+
+        std::function<void(const BuildingPart *, int)> writeBp =
+            [&](const BuildingPart *bp, int bpIndex) {
+                xml.writeStartElement(QStringLiteral("BuildingPart"));
+                xml.writeAttribute(QStringLiteral("Type"), BuildingPart::typeToString(bp->type()));
+                xml.writeAttribute(QStringLiteral("Name"), bp->name());
+                // Id is derived from parent's id + child index; build a stable id here
+                // We pass bpIndex but actual stable id tracking is via Name+Type in tests
+                for (const QString &gaRef : bp->groupAddressRefs()) {
+                    xml.writeStartElement(QStringLiteral("GroupAddressRef"));
+                    xml.writeAttribute(QStringLiteral("RefId"), gaRef);
+                    xml.writeEndElement();
+                }
+                for (const QString &devRef : bp->deviceRefs()) {
+                    xml.writeStartElement(QStringLiteral("DeviceInstanceRef"));
+                    xml.writeAttribute(QStringLiteral("RefId"), devRef);
+                    xml.writeEndElement();
+                }
+                for (int c = 0; c < bp->childCount(); ++c)
+                    writeBp(bp->childAt(c), c);
+                xml.writeEndElement(); // BuildingPart
+            };
+
+        for (int i = 0; i < project.buildingCount(); ++i)
+            writeBp(project.buildingAt(i), i);
+
+        xml.writeEndElement(); // Buildings
+    }
+
     xml.writeEndElement(); // Installation
     xml.writeEndElement(); // Installations
     xml.writeEndElement(); // Project
@@ -290,9 +323,30 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
     int            areaAddr      = 0;
     int            lineAddr      = 0;
 
+    // Building structure parsing: stack of active BuildingPart pointers
+    QList<BuildingPart *> bpStack;
+    bool insideBuildings = false;
+
     // Parsing
     while (!xml.atEnd() && !xml.hasError()) {
-        if (xml.readNext() != QXmlStreamReader::StartElement)
+        const auto token = xml.readNext();
+
+        if (token == QXmlStreamReader::EndElement) {
+            const QStringView ename = xml.name();
+            if (ename == QLatin1String("Buildings")) {
+                insideBuildings = false;
+            } else if (ename == QLatin1String("BuildingPart") && insideBuildings) {
+                if (!bpStack.isEmpty())
+                    bpStack.removeLast();
+            }
+            // When leaving Area/Line/Device context
+            if (ename == QLatin1String("Area"))        { currentArea = nullptr; currentLine = nullptr; }
+            else if (ename == QLatin1String("Line"))   { currentLine = nullptr; }
+            else if (ename == QLatin1String("DeviceInstance")) { currentDev = nullptr; }
+            continue;
+        }
+
+        if (token != QXmlStreamReader::StartElement)
             continue;
 
         const QStringView name = xml.name();
@@ -372,6 +426,31 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
                             attrs.value(QLatin1String("DPTs")).toString());
             gaById[gaId] = ga;
             project->addGroupAddress(ga);
+
+        } else if (name == QLatin1String("Buildings")) {
+            insideBuildings = true;
+
+        } else if (name == QLatin1String("BuildingPart") && insideBuildings) {
+            const auto attrs = xml.attributes();
+            const BuildingPart::Type bpType =
+                BuildingPart::typeFromString(attrs.value(QLatin1String("Type")).toString());
+            const QString bpName = attrs.value(QLatin1String("Name")).toString();
+            auto bp = std::make_unique<BuildingPart>(bpType, bpName);
+            BuildingPart *bpRaw = bp.get();
+            if (bpStack.isEmpty()) {
+                project->addBuilding(std::move(bp));
+            } else {
+                bpStack.last()->addChild(std::move(bp));
+            }
+            bpStack.append(bpRaw);
+
+        } else if (name == QLatin1String("GroupAddressRef") && insideBuildings && !bpStack.isEmpty()) {
+            const QString refId = xml.attributes().value(QLatin1String("RefId")).toString();
+            bpStack.last()->addGroupAddressRef(refId);
+
+        } else if (name == QLatin1String("DeviceInstanceRef") && insideBuildings && !bpStack.isEmpty()) {
+            const QString refId = xml.attributes().value(QLatin1String("RefId")).toString();
+            bpStack.last()->addDeviceRef(refId);
         }
     }
 

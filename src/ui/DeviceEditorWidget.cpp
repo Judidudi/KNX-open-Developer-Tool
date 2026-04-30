@@ -15,6 +15,8 @@
 #include <QComboBox>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QScrollArea>
+#include <QScrollBar>
 
 DeviceEditorWidget::DeviceEditorWidget(QWidget *parent)
     : QWidget(parent)
@@ -29,12 +31,16 @@ DeviceEditorWidget::DeviceEditorWidget(QWidget *parent)
     m_tabs = new QTabWidget(this);
     layout->addWidget(m_tabs);
 
-    m_paramTab  = new QWidget(m_tabs);
-    m_comObjTab = new QWidget(m_tabs);
-    m_tabs->addTab(m_paramTab,  tr("Parameter"));
-    m_tabs->addTab(m_comObjTab, tr("Kommunikationsobjekte"));
-
+    // Parameter tab: wrap in a QScrollArea so visibility rebuilds don't change window size
+    m_paramTab = new QWidget(this);
     m_paramLayout = new QFormLayout(m_paramTab);
+    auto *paramScroll = new QScrollArea(m_tabs);
+    paramScroll->setWidgetResizable(true);
+    paramScroll->setWidget(m_paramTab);
+    m_tabs->addTab(paramScroll, tr("Parameter"));
+
+    m_comObjTab = new QWidget(m_tabs);
+    m_tabs->addTab(m_comObjTab, tr("Kommunikationsobjekte"));
 
     auto *comLayout = new QVBoxLayout(m_comObjTab);
     m_comObjTable = new QTableWidget(m_comObjTab);
@@ -93,12 +99,34 @@ void DeviceEditorWidget::clearTabs()
     m_comObjTable->setRowCount(0);
 }
 
+bool DeviceEditorWidget::isParameterVisible(const KnxParameter &p) const
+{
+    if (p.access == KnxParameter::Access::Hidden)
+        return false;
+
+    if (!p.conditionParamId.isEmpty()) {
+        const auto it = m_device->parameters().find(p.conditionParamId);
+        const QVariant cur = (it != m_device->parameters().end()) ? it->second : QVariant(0);
+        const bool eq = (cur.toString() == p.conditionValue.toString());
+        if (p.conditionOp == KnxParameter::ConditionOp::Equal && !eq)
+            return false;
+        if (p.conditionOp == KnxParameter::ConditionOp::NotEqual && eq)
+            return false;
+    }
+    return true;
+}
+
 void DeviceEditorWidget::buildParameterTab()
 {
     m_updating = true;
     const KnxApplicationProgram *app = m_device->appProgram();
 
+    int visibleCount = 0;
     for (const KnxParameter &p : app->parameters) {
+        if (!isParameterVisible(p))
+            continue;
+
+        ++visibleCount;
         auto paramIt = m_device->parameters().find(p.id);
         const QVariant currentValue = (paramIt != m_device->parameters().end()) ? paramIt->second : p.defaultValue;
         const KnxParameterType *pt = app->findType(p.typeId);
@@ -138,10 +166,34 @@ void DeviceEditorWidget::buildParameterTab()
         m_paramLayout->addRow(p.name + QStringLiteral(":"), editor);
     }
 
-    if (app->parameters.isEmpty())
-        m_paramLayout->addRow(new QLabel(tr("Dieses Gerät hat keine Parameter."), m_paramTab));
+    if (visibleCount == 0)
+        m_paramLayout->addRow(new QLabel(tr("Dieses Gerät hat keine sichtbaren Parameter."), m_paramTab));
 
     m_updating = false;
+}
+
+void DeviceEditorWidget::rebuildParameterTab()
+{
+    // Preserve scroll position across rebuild
+    QScrollArea *scroll = nullptr;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if ((scroll = qobject_cast<QScrollArea *>(m_tabs->widget(i))))
+            break;
+    }
+    const int scrollValue = scroll ? scroll->verticalScrollBar()->value() : 0;
+
+    m_paramWidgets.clear();
+    while (m_paramLayout->count() > 0) {
+        QLayoutItem *item = m_paramLayout->takeAt(0);
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+
+    buildParameterTab();
+
+    if (scroll)
+        scroll->verticalScrollBar()->setValue(scrollValue);
 }
 
 void DeviceEditorWidget::buildComObjectTab()
@@ -226,6 +278,21 @@ void DeviceEditorWidget::onParameterChanged()
         newValue = combo->currentData();
 
     m_device->parameters()[id] = newValue;
+
+    // Check if any parameter uses this one as a condition — if so, rebuild tab.
+    const KnxApplicationProgram *app = m_device->appProgram();
+    if (app) {
+        bool needsRebuild = false;
+        for (const KnxParameter &p : app->parameters) {
+            if (p.conditionParamId == id) {
+                needsRebuild = true;
+                break;
+            }
+        }
+        if (needsRebuild)
+            rebuildParameterTab();
+    }
+
     emit deviceModified();
 }
 

@@ -12,6 +12,7 @@
 #include "Project.h"
 #include "TopologyNode.h"
 #include "DeviceInstance.h"
+#include "BuildingPart.h"
 #include "KnxprodCatalog.h"
 #include "KnxApplicationProgram.h"
 #include "Manifest.h"
@@ -33,6 +34,7 @@
 #include <QAction>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QInputDialog>
 #include <QMessageBox>
 #include <QCloseEvent>
 #include <QApplication>
@@ -217,6 +219,40 @@ void MainWindow::setupCentralWidget()
                 m_projectTree->refresh();
                 markModified();
             });
+
+    // G1: Topology signals
+    connect(m_projectTree, &ProjectTreeWidget::addAreaRequested,
+            this, &MainWindow::onAddAreaRequested);
+    connect(m_projectTree, &ProjectTreeWidget::addLineRequested,
+            this, &MainWindow::onAddLineRequested);
+    connect(m_projectTree, &ProjectTreeWidget::deleteAreaRequested,
+            this, &MainWindow::onDeleteAreaRequested);
+    connect(m_projectTree, &ProjectTreeWidget::deleteLineRequested,
+            this, &MainWindow::onDeleteLineRequested);
+    connect(m_projectTree, &ProjectTreeWidget::deleteDeviceRequested,
+            this, &MainWindow::onDeleteDeviceRequested);
+
+    // G1: Group address signals
+    connect(m_projectTree, &ProjectTreeWidget::addMainGroupRequested,
+            this, &MainWindow::onAddMainGroupRequested);
+    connect(m_projectTree, &ProjectTreeWidget::addMiddleGroupRequested,
+            this, &MainWindow::onAddMiddleGroupRequested);
+    connect(m_projectTree, &ProjectTreeWidget::addGroupAddressRequested,
+            this, &MainWindow::onAddGroupAddressRequested);
+    connect(m_projectTree, &ProjectTreeWidget::deleteGroupAddressRequested,
+            this, &MainWindow::onDeleteGroupAddressRequested);
+
+    // G2: Building signals
+    connect(m_projectTree, &ProjectTreeWidget::addBuildingRequested,
+            this, &MainWindow::onAddBuildingRequested);
+    connect(m_projectTree, &ProjectTreeWidget::addBuildingChildRequested,
+            this, &MainWindow::onAddBuildingChildRequested);
+    connect(m_projectTree, &ProjectTreeWidget::deleteBuildingPartRequested,
+            this, &MainWindow::onDeleteBuildingPartRequested);
+
+    // Inline renames via setData already call markModified via projectModified signal
+    connect(m_projectTree, &ProjectTreeWidget::projectModified,
+            this, &MainWindow::markModified);
 }
 
 void MainWindow::setupStatusBar()
@@ -543,4 +579,258 @@ void MainWindow::closeEvent(QCloseEvent *event)
         event->accept();
     else
         event->ignore();
+}
+
+// ─── G1: Topology management ──────────────────────────────────────────────────
+
+void MainWindow::onAddAreaRequested()
+{
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, tr("Neuen Bereich anlegen"),
+                                               tr("Name des Bereichs:"),
+                                               QLineEdit::Normal, tr("Bereich"), &ok);
+    if (!ok || name.trimmed().isEmpty())
+        return;
+
+    const int nextId = m_project->areaCount() + 1;
+    m_project->addArea(std::make_unique<TopologyNode>(TopologyNode::Type::Area, nextId, name.trimmed()));
+    m_projectTree->refresh();
+    markModified();
+}
+
+void MainWindow::onAddLineRequested(TopologyNode *area)
+{
+    if (!area) return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, tr("Neue Linie anlegen"),
+                                               tr("Name der Linie:"),
+                                               QLineEdit::Normal, tr("Linie"), &ok);
+    if (!ok || name.trimmed().isEmpty())
+        return;
+
+    const int nextId = area->childCount() + 1;
+    area->addChild(std::make_unique<TopologyNode>(TopologyNode::Type::Line, nextId, name.trimmed()));
+    m_projectTree->refresh();
+    markModified();
+}
+
+void MainWindow::onDeleteAreaRequested(TopologyNode *area)
+{
+    if (!area) return;
+    const auto btn = QMessageBox::question(this, tr("Bereich löschen"),
+        tr("Bereich \"%1\" und alle enthaltenen Linien und Geräte wirklich löschen?").arg(area->name()),
+        QMessageBox::Yes | QMessageBox::Cancel);
+    if (btn != QMessageBox::Yes) return;
+
+    for (int i = 0; i < m_project->areaCount(); ++i) {
+        if (m_project->areaAt(i) == area) {
+            m_project->removeAreaAt(i);
+            break;
+        }
+    }
+
+    if (m_selectedDevice) {
+        m_selectedDevice = nullptr;
+        m_deviceEditor->clearDevice();
+        m_propertiesPanel->clearSelection();
+    }
+    m_projectTree->refresh();
+    markModified();
+}
+
+void MainWindow::onDeleteLineRequested(TopologyNode *line)
+{
+    if (!line || !line->parent()) return;
+    const auto btn = QMessageBox::question(this, tr("Linie löschen"),
+        tr("Linie \"%1\" und alle enthaltenen Geräte wirklich löschen?").arg(line->name()),
+        QMessageBox::Yes | QMessageBox::Cancel);
+    if (btn != QMessageBox::Yes) return;
+
+    TopologyNode *area = line->parent();
+    const int idx = area->indexOfChild(line);
+    if (idx >= 0)
+        area->removeChildAt(idx);
+
+    if (m_selectedDevice) {
+        m_selectedDevice = nullptr;
+        m_deviceEditor->clearDevice();
+        m_propertiesPanel->clearSelection();
+    }
+    m_projectTree->refresh();
+    markModified();
+}
+
+void MainWindow::onDeleteDeviceRequested(DeviceInstance *dev)
+{
+    if (!dev) return;
+
+    // Find which line owns this device
+    for (int a = 0; a < m_project->areaCount(); ++a) {
+        TopologyNode *area = m_project->areaAt(a);
+        for (int l = 0; l < area->childCount(); ++l) {
+            TopologyNode *line = area->childAt(l);
+            const int idx = line->indexOfDevice(dev);
+            if (idx >= 0) {
+                line->removeDeviceAt(idx);
+                if (m_selectedDevice == dev) {
+                    m_selectedDevice = nullptr;
+                    m_deviceEditor->clearDevice();
+                    m_propertiesPanel->clearSelection();
+                }
+                m_projectTree->refresh();
+                markModified();
+                return;
+            }
+        }
+    }
+}
+
+// ─── G1: Group address management ─────────────────────────────────────────────
+
+void MainWindow::onAddMainGroupRequested()
+{
+    bool ok = false;
+    // Determine next available main group number
+    int nextMain = 0;
+    for (const GroupAddress &ga : m_project->groupAddresses())
+        nextMain = qMax(nextMain, ga.main() + 1);
+
+    const QString label = QInputDialog::getText(this, tr("Neue Hauptgruppe"),
+        tr("Bezeichnung der Hauptgruppe %1:").arg(nextMain),
+        QLineEdit::Normal, tr("Hauptgruppe %1").arg(nextMain), &ok);
+    if (!ok) return;
+
+    // Add a placeholder GA at sub-address 0 to create the main group in the tree
+    GroupAddress ga(nextMain, 0, 0, label.trimmed().isEmpty()
+                    ? tr("Hauptgruppe %1").arg(nextMain) : label.trimmed(),
+                    QString());
+    m_project->addGroupAddress(ga);
+    m_projectTree->refresh();
+    markModified();
+}
+
+void MainWindow::onAddMiddleGroupRequested(int mainGroup)
+{
+    bool ok = false;
+    int nextMid = 0;
+    for (const GroupAddress &ga : m_project->groupAddresses())
+        if (ga.main() == mainGroup) nextMid = qMax(nextMid, ga.middle() + 1);
+
+    const QString label = QInputDialog::getText(this, tr("Neue Mittelgruppe"),
+        tr("Bezeichnung der Mittelgruppe %1/%2:").arg(mainGroup).arg(nextMid),
+        QLineEdit::Normal, tr("Mittelgruppe %1").arg(nextMid), &ok);
+    if (!ok) return;
+
+    GroupAddress ga(mainGroup, nextMid, 0, label.trimmed().isEmpty()
+                    ? tr("Mittelgruppe %1/%2").arg(mainGroup).arg(nextMid) : label.trimmed(),
+                    QString());
+    m_project->addGroupAddress(ga);
+    m_projectTree->refresh();
+    markModified();
+}
+
+void MainWindow::onAddGroupAddressRequested(int mainGroup, int middleGroup)
+{
+    GroupAddressDialog dlg(this);
+    // Pre-fill the main and middle group — GroupAddressDialog needs to support this
+    // For now use the existing dialog without pre-fill (full manual entry)
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    GroupAddress ga(dlg.mainGroup(), dlg.middleGroup(), dlg.subGroup(),
+                    dlg.name(), dlg.dpt());
+    if (m_project->findGroupAddress(ga.toString())) {
+        QMessageBox::warning(this, tr("Gruppenadresse existiert bereits"),
+            tr("Die Adresse %1 ist im Projekt bereits vorhanden.").arg(ga.toString()));
+        return;
+    }
+    m_project->addGroupAddress(ga);
+    m_projectTree->refresh();
+    markModified();
+}
+
+void MainWindow::onDeleteGroupAddressRequested(GroupAddress *ga)
+{
+    if (!ga) return;
+    const auto btn = QMessageBox::question(this, tr("Gruppenadresse löschen"),
+        tr("Gruppenadresse \"%1\" (%2) wirklich löschen?").arg(ga->name(), ga->toString()),
+        QMessageBox::Yes | QMessageBox::Cancel);
+    if (btn != QMessageBox::Yes) return;
+
+    m_project->removeGroupAddress(ga->toString());
+    m_projectTree->refresh();
+    markModified();
+}
+
+// ─── G2: Building management ──────────────────────────────────────────────────
+
+void MainWindow::onAddBuildingRequested()
+{
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, tr("Neues Gebäude anlegen"),
+                                               tr("Name des Gebäudes:"),
+                                               QLineEdit::Normal, tr("Gebäude"), &ok);
+    if (!ok || name.trimmed().isEmpty())
+        return;
+
+    m_project->addBuilding(std::make_unique<BuildingPart>(BuildingPart::Type::Building, name.trimmed()));
+    m_projectTree->refresh();
+    markModified();
+}
+
+void MainWindow::onAddBuildingChildRequested(BuildingPart *parent, BuildingPart::Type childType)
+{
+    if (!parent) return;
+
+    QString title, defaultName;
+    switch (childType) {
+    case BuildingPart::Type::Floor:
+        title       = tr("Neue Etage anlegen");
+        defaultName = tr("Etage");
+        break;
+    case BuildingPart::Type::Room:
+        title       = tr("Neuen Raum anlegen");
+        defaultName = tr("Raum");
+        break;
+    default:
+        title       = tr("Neues Element anlegen");
+        defaultName = tr("Element");
+        break;
+    }
+
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, title, tr("Name:"),
+                                               QLineEdit::Normal, defaultName, &ok);
+    if (!ok || name.trimmed().isEmpty())
+        return;
+
+    parent->addChild(std::make_unique<BuildingPart>(childType, name.trimmed()));
+    m_projectTree->refresh();
+    markModified();
+}
+
+void MainWindow::onDeleteBuildingPartRequested(BuildingPart *bp)
+{
+    if (!bp) return;
+    const auto btn = QMessageBox::question(this, tr("Element löschen"),
+        tr("\"%1\" und alle enthaltenen Elemente wirklich löschen?").arg(bp->name()),
+        QMessageBox::Yes | QMessageBox::Cancel);
+    if (btn != QMessageBox::Yes) return;
+
+    BuildingPart *parent = bp->parent();
+    if (parent) {
+        const int idx = bp->indexInParent();
+        if (idx >= 0)
+            parent->removeChildAt(idx);
+    } else {
+        // Top-level building
+        for (int i = 0; i < m_project->buildingCount(); ++i) {
+            if (m_project->buildingAt(i) == bp) {
+                m_project->removeBuildingAt(i);
+                break;
+            }
+        }
+    }
+    m_projectTree->refresh();
+    markModified();
 }

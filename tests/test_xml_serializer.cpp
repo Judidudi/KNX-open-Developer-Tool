@@ -6,6 +6,7 @@
 #include "DeviceInstance.h"
 #include "GroupAddress.h"
 #include "ComObjectLink.h"
+#include "BuildingPart.h"
 #include "KnxprojSerializer.h"
 
 class TestKnxprojSerializer : public QObject
@@ -228,6 +229,58 @@ private slots:
         }
         QCOMPARE(sendDir, ComObjectLink::Direction::Send);
         QCOMPARE(recvDir, ComObjectLink::Direction::Receive);
+    }
+
+    void buildingRoundtrip()
+    {
+        Project orig;
+        orig.setName(QStringLiteral("BuildingTest"));
+
+        // Build: Hauptgebäude → Erdgeschoss → Wohnzimmer
+        auto building = std::make_unique<BuildingPart>(BuildingPart::Type::Building, QStringLiteral("Hauptgebäude"));
+        auto floor    = std::make_unique<BuildingPart>(BuildingPart::Type::Floor,    QStringLiteral("Erdgeschoss"));
+        auto room     = std::make_unique<BuildingPart>(BuildingPart::Type::Room,     QStringLiteral("Wohnzimmer"));
+
+        room->addGroupAddressRef(QStringLiteral("P-X_GA-1024"));
+        room->addDeviceRef(QStringLiteral("P-X_DI-d1"));
+
+        floor->addChild(std::move(room));
+        building->addChild(std::move(floor));
+        orig.addBuilding(std::move(building));
+
+        QTemporaryFile tmp;
+        tmp.setFileTemplate(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                            + QStringLiteral("/building-XXXXXX.knxproj"));
+        QVERIFY(tmp.open());
+        const QString path = tmp.fileName();
+        tmp.close();
+
+        QVERIFY(KnxprojSerializer::save(orig, path));
+
+        auto loaded = KnxprojSerializer::load(path);
+        QVERIFY(loaded != nullptr);
+        QCOMPARE(loaded->buildingCount(), 1);
+
+        BuildingPart *b = loaded->buildingAt(0);
+        QVERIFY(b != nullptr);
+        QCOMPARE(b->name(), QStringLiteral("Hauptgebäude"));
+        QCOMPARE(b->type(), BuildingPart::Type::Building);
+        QCOMPARE(b->childCount(), 1);
+
+        BuildingPart *f = b->childAt(0);
+        QVERIFY(f != nullptr);
+        QCOMPARE(f->name(), QStringLiteral("Erdgeschoss"));
+        QCOMPARE(f->type(), BuildingPart::Type::Floor);
+        QCOMPARE(f->childCount(), 1);
+
+        BuildingPart *r = f->childAt(0);
+        QVERIFY(r != nullptr);
+        QCOMPARE(r->name(), QStringLiteral("Wohnzimmer"));
+        QCOMPARE(r->type(), BuildingPart::Type::Room);
+        QCOMPARE(r->groupAddressRefs().size(), 1);
+        QCOMPARE(r->groupAddressRefs()[0], QStringLiteral("P-X_GA-1024"));
+        QCOMPARE(r->deviceRefs().size(), 1);
+        QCOMPARE(r->deviceRefs()[0], QStringLiteral("P-X_DI-d1"));
     }
 };
 

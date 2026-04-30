@@ -65,6 +65,14 @@ static QString normalizeDpt(const QString &raw)
     return raw;
 }
 
+struct ParamRefInfo {
+    QString paramId;                // actual Parameter.Id (from RefId attribute)
+    KnxParameter::Access access = KnxParameter::Access::ReadWrite;
+    QString conditionRefId;         // ParameterRef.Id of the condition source param
+    QVariant conditionValue;
+    KnxParameter::ConditionOp conditionOp = KnxParameter::ConditionOp::Equal;
+};
+
 static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArray &xml)
 {
     auto prog = std::make_shared<KnxApplicationProgram>();
@@ -77,6 +85,9 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
     bool inPT = false;
     // Track the largest AbsoluteSegment seen (some manufacturers emit several small ones).
     quint32 bestSegSize = 0;
+
+    // ParameterRef data collected during parsing; resolved into prog->parameters after loop.
+    QMap<QString, ParamRefInfo> paramRefs; // key: ParameterRef.Id
 
     while (!rd.atEnd()) {
         const auto token = rd.readNext();
@@ -178,6 +189,41 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
             }
             prog->parameters.append(p);
 
+        } else if (n == QLatin1String("ParameterRef") && insideParamContext > 0) {
+            // Collect access and condition info; applied to parameters after the loop.
+            const QString refId   = rd.attributes().value(QLatin1String("Id")).toString();
+            const QString paramId = rd.attributes().value(QLatin1String("RefId")).toString();
+            const QString access  = rd.attributes().value(QLatin1String("Access")).toString();
+
+            ParamRefInfo info;
+            info.paramId = paramId;
+            if (access == QLatin1String("Hidden"))
+                info.access = KnxParameter::Access::Hidden;
+            else if (access == QLatin1String("ReadOnly"))
+                info.access = KnxParameter::Access::ReadOnly;
+            else
+                info.access = KnxParameter::Access::ReadWrite;
+
+            // Read optional <Conditions><Condition><ConditionValue> children
+            while (!rd.atEnd()) {
+                rd.readNext();
+                if (rd.isEndElement() && rd.name() == QLatin1String("ParameterRef"))
+                    break;
+                if (!rd.isStartElement())
+                    continue;
+                if (rd.name() == QLatin1String("ConditionValue")) {
+                    info.conditionRefId = rd.attributes().value(QLatin1String("RefId")).toString();
+                    info.conditionValue = rd.attributes().value(QLatin1String("Value")).toString();
+                    const QString op = rd.attributes().value(QLatin1String("Operator")).toString();
+                    info.conditionOp = (op == QLatin1String("notEqual"))
+                                       ? KnxParameter::ConditionOp::NotEqual
+                                       : KnxParameter::ConditionOp::Equal;
+                }
+            }
+
+            if (!refId.isEmpty() && !paramId.isEmpty())
+                paramRefs.insert(refId, info);
+
         } else if (n == QLatin1String("ComObject") && insideParamContext > 0) {
             KnxComObject co;
             const QString origId = rd.attributes().value(QLatin1String("OriginalId")).toString();
@@ -203,6 +249,29 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
                     co.flags.append(QStringLiteral("U"));
             }
             prog->comObjects.append(co);
+        }
+    }
+
+    // Apply ParameterRef access and conditions to the collected parameters.
+    // Build a reverse map: Parameter.Id → ParamRefInfo (first matching ref wins).
+    QMap<QString, ParamRefInfo> paramIdToRef;
+    for (auto it = paramRefs.constBegin(); it != paramRefs.constEnd(); ++it) {
+        if (!paramIdToRef.contains(it->paramId))
+            paramIdToRef.insert(it->paramId, it.value());
+    }
+    for (KnxParameter &p : prog->parameters) {
+        const auto infoIt = paramIdToRef.constFind(p.id);
+        if (infoIt == paramIdToRef.constEnd())
+            continue;
+        const ParamRefInfo &info = *infoIt;
+        p.access = info.access;
+        if (!info.conditionRefId.isEmpty()) {
+            // Resolve ParameterRef.Id of condition source → actual Parameter.Id
+            const auto condRefIt = paramRefs.constFind(info.conditionRefId);
+            if (condRefIt != paramRefs.constEnd())
+                p.conditionParamId = condRefIt->paramId;
+            p.conditionValue = info.conditionValue;
+            p.conditionOp    = info.conditionOp;
         }
     }
 

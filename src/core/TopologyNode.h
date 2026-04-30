@@ -25,15 +25,19 @@ public:
 
     // Child nodes (Areas contain Lines)
     void                addChild(std::unique_ptr<TopologyNode> child);
+    void                removeChildAt(int index);
     TopologyNode       *childAt(int index);
     const TopologyNode *childAt(int index) const;
     int                 childCount() const;
     int                 indexInParent() const;
+    int                 indexOfChild(const TopologyNode *child) const;
 
     // Devices (only valid on Line nodes)
     void           addDevice(std::unique_ptr<DeviceInstance> device);
+    void           removeDeviceAt(int index);
     DeviceInstance *deviceAt(int index);
     int             deviceCount() const;
+    int             indexOfDevice(const DeviceInstance *dev) const;
 
 private:
     Type         m_type;
