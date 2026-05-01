@@ -8,6 +8,7 @@
 
 #include <QIcon>
 #include <QMap>
+#include <QMimeData>
 #include <vector>
 
 // Internal tree node. Built once in rebuild() and owned by the model.
@@ -221,14 +222,17 @@ int ProjectTreeModel::columnCount(const QModelIndex &) const
 Qt::ItemFlags ProjectTreeModel::flags(const QModelIndex &index) const
 {
     if (!index.isValid())
-        return Qt::NoItemFlags;
+        return Qt::ItemIsDropEnabled;  // allow drop onto root (becomes "onto Line")
     Qt::ItemFlags f = QAbstractItemModel::flags(index);
     Node *n = nodeFromIndex(index);
     if (!n) return f;
-    // Allow inline renaming for topology nodes, devices, GAs, and building nodes
     if (n->kind == Area || n->kind == Line || n->kind == Device ||
         n->kind == GroupAddress || n->kind == BuildingNode)
         f |= Qt::ItemIsEditable;
+    if (n->kind == Device)
+        f |= Qt::ItemIsDragEnabled;
+    if (n->kind == Line)
+        f |= Qt::ItemIsDropEnabled;
     return f;
 }
 
@@ -325,4 +329,79 @@ QVariant ProjectTreeModel::headerData(int section, Qt::Orientation orientation, 
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole)
         return {};
     return section == 0 ? tr("Element") : tr("Typ");
+}
+
+// Drag & drop: move Device items between Line nodes
+static const char *kDeviceMime = "application/x-knxodt-device-ptr";
+
+Qt::DropActions ProjectTreeModel::supportedDropActions() const
+{
+    return Qt::MoveAction;
+}
+
+QStringList ProjectTreeModel::mimeTypes() const
+{
+    return { QLatin1String(kDeviceMime) };
+}
+
+QMimeData *ProjectTreeModel::mimeData(const QModelIndexList &indexes) const
+{
+    if (indexes.isEmpty()) return nullptr;
+    const QModelIndex idx = indexes.first();
+    Node *n = nodeFromIndex(idx);
+    if (!n || n->kind != Device) return nullptr;
+
+    auto *mime = new QMimeData;
+    // Encode the pointer value as a hex string — safe for internal DnD only
+    mime->setData(QLatin1String(kDeviceMime),
+                  QByteArray::number(reinterpret_cast<qintptr>(n->rawPtr), 16));
+    return mime;
+}
+
+bool ProjectTreeModel::dropMimeData(const QMimeData *data, Qt::DropAction action,
+                                    int /*row*/, int /*column*/, const QModelIndex &parent)
+{
+    if (action != Qt::MoveAction || !data->hasFormat(QLatin1String(kDeviceMime)))
+        return false;
+
+    // Decode device pointer
+    bool ok = false;
+    const qintptr ptrVal = data->data(QLatin1String(kDeviceMime)).toLongLong(&ok, 16);
+    if (!ok) return false;
+    auto *dev = reinterpret_cast<DeviceInstance *>(ptrVal);
+
+    // Resolve drop target line
+    Node *target = nodeFromIndex(parent);
+    if (!target || target->kind != Line) return false;
+    auto *targetLine = static_cast<TopologyNode *>(target->rawPtr);
+    if (!targetLine) return false;
+
+    // Find source line that currently holds the device
+    Node *devNode = nullptr;
+    Node *sourceLineNode = nullptr;
+    auto findNodes = [&](auto &self, Node *node) -> void {
+        for (auto &child : node->children) {
+            if (child->kind == Device && child->rawPtr == dev) {
+                devNode = child.get();
+                sourceLineNode = node;
+                return;
+            }
+            self(self, child.get());
+        }
+    };
+    findNodes(findNodes, m_root.get());
+
+    if (!devNode || !sourceLineNode) return false;
+    auto *sourceLine = static_cast<TopologyNode *>(sourceLineNode->rawPtr);
+    if (!sourceLine || sourceLine == targetLine) return false;
+
+    // Perform the move in the data model
+    const int srcIdx = sourceLine->indexOfDevice(dev);
+    if (srcIdx < 0) return false;
+
+    std::unique_ptr<DeviceInstance> devOwned = sourceLine->takeDeviceAt(srcIdx);
+    targetLine->addDevice(std::move(devOwned));
+
+    rebuild();
+    return true;
 }

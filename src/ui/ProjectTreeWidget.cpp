@@ -10,10 +10,12 @@
 #include <QTreeView>
 #include <QHeaderView>
 #include <QVBoxLayout>
+#include <QLineEdit>
 #include <QItemSelectionModel>
 #include <QMenu>
 #include <QKeyEvent>
 #include <QAbstractItemView>
+#include <QSortFilterProxyModel>
 
 // Helper: installs an event filter on a tree view to intercept Del/F2
 class TreeKeyFilter : public QObject
@@ -82,13 +84,25 @@ ProjectTreeWidget::ProjectTreeWidget(QWidget *parent)
     ::setupTreeView(m_topoView);
     ::setupTreeView(m_gaView);
     ::setupTreeView(m_buildingView);
+    m_topoView->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_topoView->setDragEnabled(true);
+    m_topoView->setAcceptDrops(true);
+    m_topoView->setDropIndicatorShown(true);
+    m_topoView->setDragDropMode(QAbstractItemView::InternalMove);
 
     m_topoView->setObjectName(QStringLiteral("topoView"));
     m_gaView->setObjectName(QStringLiteral("gaView"));
     m_buildingView->setObjectName(QStringLiteral("buildingView"));
 
+    // GA proxy for search filtering
+    m_gaProxy = new QSortFilterProxyModel(this);
+    m_gaProxy->setSourceModel(m_model);
+    m_gaProxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    m_gaProxy->setRecursiveFilteringEnabled(true);
+    m_gaProxy->setFilterKeyColumn(0);
+
     m_topoView->setModel(m_model);
-    m_gaView->setModel(m_model);
+    m_gaView->setModel(m_gaProxy);
     m_buildingView->setModel(m_model);
 
     // Only show the label column (column 1 = "details" is hidden in nav views)
@@ -96,8 +110,21 @@ ProjectTreeWidget::ProjectTreeWidget(QWidget *parent)
     m_gaView->setColumnHidden(1, true);
     m_buildingView->setColumnHidden(1, true);
 
+    m_gaSearch = new QLineEdit(this);
+    m_gaSearch->setPlaceholderText(tr("Gruppen-/Adresssuche…"));
+    m_gaSearch->setClearButtonEnabled(true);
+    connect(m_gaSearch, &QLineEdit::textChanged,
+            this, &ProjectTreeWidget::onGaSearchChanged);
+
+    auto *gaContainer = new QWidget(this);
+    auto *gaLayout    = new QVBoxLayout(gaContainer);
+    gaLayout->setContentsMargins(0, 2, 0, 0);
+    gaLayout->setSpacing(2);
+    gaLayout->addWidget(m_gaSearch);
+    gaLayout->addWidget(m_gaView);
+
     m_tabs->addTab(m_topoView,      tr("Topologie"));
-    m_tabs->addTab(m_gaView,        tr("Gruppen"));
+    m_tabs->addTab(gaContainer,     tr("Gruppen"));
     m_tabs->addTab(m_buildingView,  tr("Gebäude"));
     m_tabs->addTab(m_catWidget,     tr("Katalog"));
 
@@ -131,6 +158,12 @@ ProjectTreeWidget::ProjectTreeWidget(QWidget *parent)
                 if (roles.contains(Qt::DisplayRole))
                     emit projectModified();
             });
+    // After a drag & drop rebuild, update root indices and notify
+    connect(m_model, &ProjectTreeModel::modelReset,
+            this, [this]() {
+                updateRootIndices();
+                emit projectModified();
+            });
 }
 
 void ProjectTreeWidget::setProject(Project *project)
@@ -157,7 +190,7 @@ void ProjectTreeWidget::updateRootIndices()
     const QModelIndex gaRoot       = m_model->index(1, 0, {});
     const QModelIndex buildingRoot = m_model->index(2, 0, {});
     m_topoView->setRootIndex(topoRoot);
-    m_gaView->setRootIndex(gaRoot);
+    m_gaView->setRootIndex(m_gaProxy->mapFromSource(gaRoot));
     m_buildingView->setRootIndex(buildingRoot);
     m_topoView->expandAll();
     m_gaView->expandAll();
@@ -185,7 +218,8 @@ void ProjectTreeWidget::onGaSelectionChanged()
         emit selectionCleared();
         return;
     }
-    if (::GroupAddress *ga = m_model->groupAddressAt(sel.first())) {
+    const QModelIndex src = m_gaProxy->mapToSource(sel.first());
+    if (::GroupAddress *ga = m_model->groupAddressAt(src)) {
         emit groupAddressSelected(ga);
         return;
     }
@@ -246,7 +280,8 @@ void ProjectTreeWidget::onTopoContextMenu(const QPoint &pos)
 
 void ProjectTreeWidget::onGaContextMenu(const QPoint &pos)
 {
-    const QModelIndex idx = m_gaView->indexAt(pos);
+    const QModelIndex proxyIdx = m_gaView->indexAt(pos);
+    const QModelIndex idx = proxyIdx.isValid() ? m_gaProxy->mapToSource(proxyIdx) : QModelIndex{};
     const ProjectTreeModel::ItemKind kind = idx.isValid()
                                             ? m_model->kindAt(idx)
                                             : ProjectTreeModel::GaRoot;
@@ -258,7 +293,6 @@ void ProjectTreeWidget::onGaContextMenu(const QPoint &pos)
             emit addMainGroupRequested();
         });
     } else if (kind == ProjectTreeModel::MainGroup) {
-        // Extract main group number from label (e.g. "2 Hauptgruppe" → 2)
         const QString label = m_model->data(idx, Qt::DisplayRole).toString();
         const int main = label.section(QLatin1Char(' '), 0, 0).toInt();
         menu.addAction(tr("Neue Mittelgruppe…"), this, [this, main](){
@@ -266,7 +300,6 @@ void ProjectTreeWidget::onGaContextMenu(const QPoint &pos)
         });
     } else if (kind == ProjectTreeModel::MiddleGroup) {
         const QString label = m_model->data(idx, Qt::DisplayRole).toString();
-        // Label is "M/MID Mittelgruppe"
         const QStringList parts = label.section(QLatin1Char(' '), 0, 0).split(QLatin1Char('/'));
         const int main = parts.value(0).toInt();
         const int mid  = parts.value(1).toInt();
@@ -275,8 +308,8 @@ void ProjectTreeWidget::onGaContextMenu(const QPoint &pos)
         });
     } else if (kind == ProjectTreeModel::GroupAddress) {
         auto *ga = m_model->groupAddressAt(idx);
-        menu.addAction(tr("Umbenennen"), this, [this, idx](){
-            m_gaView->edit(idx);
+        menu.addAction(tr("Umbenennen"), this, [this, proxyIdx](){
+            m_gaView->edit(proxyIdx);
         });
         menu.addAction(tr("Löschen"), this, [this, ga](){
             emit deleteGroupAddressRequested(ga);
@@ -285,6 +318,13 @@ void ProjectTreeWidget::onGaContextMenu(const QPoint &pos)
 
     if (!menu.actions().isEmpty())
         menu.exec(m_gaView->viewport()->mapToGlobal(pos));
+}
+
+void ProjectTreeWidget::onGaSearchChanged(const QString &text)
+{
+    m_gaProxy->setFilterFixedString(text);
+    if (!text.isEmpty())
+        m_gaView->expandAll();
 }
 
 void ProjectTreeWidget::onBuildingContextMenu(const QPoint &pos)
@@ -355,4 +395,17 @@ void ProjectTreeWidget::onBuildingKeyPressed(int key, const QModelIndex &index)
     if (key != Qt::Key_Delete || !index.isValid()) return;
     if (m_model->kindAt(index) == ProjectTreeModel::BuildingNode)
         emit deleteBuildingPartRequested(m_model->buildingPartAt(index));
+}
+
+QList<DeviceInstance *> ProjectTreeWidget::selectedDevices() const
+{
+    QList<DeviceInstance *> result;
+    const QModelIndexList sel = m_topoView->selectionModel()->selectedIndexes();
+    for (const QModelIndex &idx : sel) {
+        if (idx.column() != 0)
+            continue;
+        if (DeviceInstance *dev = m_model->deviceAt(idx))
+            result.append(dev);
+    }
+    return result;
 }

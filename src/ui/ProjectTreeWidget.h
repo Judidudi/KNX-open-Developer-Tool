@@ -29,6 +29,9 @@ public:
 
     ProjectTreeModel *model() const { return m_model; }
 
+    // Returns all DeviceInstance* currently selected in the topology view.
+    QList<DeviceInstance *> selectedDevices() const;
+
 signals:
     void deviceSelected(DeviceInstance *device);
     void groupAddressSelected(GroupAddress *ga);
@@ -74,6 +77,7 @@ private slots:
     void onTopoContextMenu(const QPoint &pos);
     void onGaContextMenu(const QPoint &pos);
     void onBuildingContextMenu(const QPoint &pos);
+    void onGaSearchChanged(const QString &text);
 
 private:
     void updateRootIndices();
@@ -86,4 +90,6 @@ private:
     QTreeView        *m_buildingView = nullptr;
     CatalogWidget    *m_catWidget    = nullptr;
     ProjectTreeModel *m_model        = nullptr;
+    class QSortFilterProxyModel *m_gaProxy = nullptr;
+    class QLineEdit             *m_gaSearch = nullptr;
 };

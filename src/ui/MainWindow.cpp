@@ -12,6 +12,7 @@
 #include "dialogs/GroupAddressDialog.h"
 #include "dialogs/LineScanDialog.h"
 #include "dialogs/GaCsvImportDialog.h"
+#include "dialogs/BatchProgramDialog.h"
 
 #include "Project.h"
 #include "TopologyNode.h"
@@ -73,6 +74,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_groupMonitor->setProject(m_project.get());
     m_propertiesPanel->setProject(m_project.get());
     m_propertiesPanel->setInterfaceManager(m_interfaces.get());
+    m_deviceEditor->setInterfaceManager(m_interfaces.get());
 
     connect(m_interfaces.get(), &InterfaceManager::connected,
             this, &MainWindow::onInterfaceConnected);
@@ -727,33 +729,45 @@ void MainWindow::onLineScanClicked()
 
 void MainWindow::onProgramClicked()
 {
-    if (!m_selectedDevice) {
-        QMessageBox::information(this, tr("Kein Gerät ausgewählt"),
-            tr("Bitte wählen Sie im Projekt-Browser ein Gerät aus."));
-        return;
-    }
     if (!m_interfaces->isConnected()) {
         QMessageBox::warning(this, tr("Nicht verbunden"),
             tr("Bitte zuerst mit einem Bus-Interface verbinden."));
         return;
     }
-    if (!m_selectedDevice->appProgram())
-        m_selectedDevice->setAppProgram(m_catalog->sharedByProductRef(m_selectedDevice->productRefId()));
-    if (!m_selectedDevice->appProgram()) {
-        QMessageBox::critical(this, tr("Anwendungsprogramm fehlt"),
-            tr("Für das Gerät %1 wurde kein Anwendungsprogramm gefunden.").arg(m_selectedDevice->productRefId()));
+
+    // Collect all selected devices from the topology view
+    QList<DeviceInstance *> selected = m_projectTree->selectedDevices();
+
+    // If nothing multi-selected but a single device is active, use that
+    if (selected.isEmpty() && m_selectedDevice)
+        selected.append(m_selectedDevice);
+
+    if (selected.isEmpty()) {
+        QMessageBox::information(this, tr("Kein Gerät ausgewählt"),
+            tr("Bitte wählen Sie im Projekt-Browser ein oder mehrere Geräte aus."));
         return;
     }
 
-    auto *programmer = new DeviceProgrammer(
-        m_interfaces->activeInterface(),
-        m_selectedDevice,
-        m_selectedDevice->appProgram(),
-        this);
-
-    auto *dlg = new ProgramDialog(programmer, this);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->show();
+    if (selected.size() == 1) {
+        DeviceInstance *dev = selected.first();
+        if (!dev->appProgram())
+            dev->setAppProgram(m_catalog->sharedByProductRef(dev->productRefId()));
+        if (!dev->appProgram()) {
+            QMessageBox::critical(this, tr("Anwendungsprogramm fehlt"),
+                tr("Für das Gerät %1 wurde kein Anwendungsprogramm gefunden.").arg(dev->productRefId()));
+            return;
+        }
+        auto *programmer = new DeviceProgrammer(
+            m_interfaces->activeInterface(), dev, dev->appProgram(), this);
+        auto *dlg = new ProgramDialog(programmer, this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->show();
+    } else {
+        auto *dlg = new BatchProgramDialog(
+            selected, m_interfaces->activeInterface(), m_catalog.get(), this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->show();
+    }
 }
 
 void MainWindow::onInterfaceConnected()

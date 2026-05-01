@@ -164,6 +164,25 @@ QByteArray CemiFrame::buildRestart(uint16_t destPhysAddr)
     return f.toBytes();
 }
 
+QByteArray CemiFrame::buildMemoryRead(uint16_t destPhysAddr, uint16_t memAddr, uint8_t count)
+{
+    CemiFrame f;
+    f.messageCode   = MessageCode::LDataReq;
+    f.sourceAddress = 0x0000;
+    f.destAddress   = destPhysAddr;
+    f.groupAddress  = false;
+
+    const uint8_t cnt = (count == 0 || count > 63) ? 63 : count;
+    // APCI A_Memory_Read = 0x0200 | count
+    // Byte 0: 0x42 = T_Data_Connected(seq=0) | APCI[9:8]=0b10
+    // Byte 1: 0x00 | cnt
+    f.apdu.append(char(0x42));
+    f.apdu.append(static_cast<char>(cnt & 0x3F));   // APCI[7:0] = count (no high bits set)
+    f.apdu.append(static_cast<char>(memAddr >> 8));
+    f.apdu.append(static_cast<char>(memAddr & 0xFF));
+    return f.toBytes();
+}
+
 // ---------- APDU inspection ------------------------------------------------
 
 uint16_t CemiFrame::apci() const
@@ -190,8 +209,23 @@ bool CemiFrame::isGroupValueResponse() const
 bool CemiFrame::isDeviceDescriptorResponse() const
 {
     if (apdu.size() < 4) return false;
-    // APCI 0x340..0x343 = DeviceDescriptor_Response (type in bits 1-0)
     return (apci() & 0x3FC) == APCI_DEVICE_DESCRIPTOR_RESPONSE;
+}
+
+bool CemiFrame::isMemoryResponse() const
+{
+    if (apdu.size() < 4 || groupAddress) return false;
+    // A_Memory_Response APCI = 0x240 | count (bits 9:6 = 0b1001)
+    return (apci() & 0x3C0) == 0x240;
+}
+
+bool CemiFrame::memoryResponseData(uint16_t &addr, QByteArray &data) const
+{
+    if (!isMemoryResponse() || apdu.size() < 4) return false;
+    const uint8_t count = static_cast<uint8_t>(apdu[1]) & 0x3F;
+    addr = (static_cast<uint8_t>(apdu[2]) << 8) | static_cast<uint8_t>(apdu[3]);
+    data = apdu.mid(4, count);
+    return !data.isEmpty();
 }
 
 QByteArray CemiFrame::groupValuePayload() const
