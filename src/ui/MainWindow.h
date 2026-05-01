@@ -52,6 +52,8 @@ private slots:
     void onShowBusMonitor();
     void onShowGroupMonitor();
     void onImportCatalogFile();
+    void onImportGaCsv();
+    void onOpenRecentFile(const QString &path);
     void onInterfaceConnected();
     void onInterfaceDisconnected();
     void onInterfaceError(const QString &message);
@@ -85,6 +87,8 @@ private:
     bool maybeSave();
     void updateConnectionUi();
     void refreshGroupMonitor();
+    void addToRecentFiles(const QString &path);
+    void updateRecentFilesMenu();
 
     std::unique_ptr<Project>          m_project;
     std::unique_ptr<KnxprodCatalog>   m_catalog;
@@ -114,4 +118,6 @@ private:
     QAction *m_actBusMonitor     = nullptr;
     QAction *m_actGroupMonitor   = nullptr;
     QAction *m_actAddGroupAddr   = nullptr;
+
+    QMenu   *m_recentMenu        = nullptr;
 };

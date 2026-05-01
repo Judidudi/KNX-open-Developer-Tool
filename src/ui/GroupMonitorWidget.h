@@ -13,8 +13,8 @@ class QLabel;
 
 // Displays the current value of every group address in the project.
 // Listens for GroupValue_Response telegrams on the bus and refreshes
-// the "Wert" column. The user can trigger a GroupValue_Read for any
-// individual GA or for all GAs at once.
+// the "Wert" column. The user can trigger a GroupValue_Read or a
+// GroupValue_Write for any individual GA or read all GAs at once.
 class GroupMonitorWidget : public QWidget
 {
     Q_OBJECT
@@ -29,11 +29,14 @@ private slots:
     void onCemiReceived(const QByteArray &cemi);
     void onReadAllClicked();
     void onReadRowClicked(int row);
+    void onSendRowClicked(int row);
 
 private:
     void rebuild();
     void sendRead(uint16_t ga);
-    static QString decodeValue(const QString &dpt, const QByteArray &apdu);
+    void sendWrite(uint16_t ga, const QString &dpt, const QString &text);
+    static QByteArray encodeValue(const QString &dpt, const QString &text, bool *ok = nullptr);
+    static QString    decodeValue(const QString &dpt, const QByteArray &apdu);
 
     Project          *m_project = nullptr;
     InterfaceManager *m_iface   = nullptr;

@@ -11,6 +11,7 @@
 #include "dialogs/ConnectDialog.h"
 #include "dialogs/GroupAddressDialog.h"
 #include "dialogs/LineScanDialog.h"
+#include "dialogs/GaCsvImportDialog.h"
 
 #include "Project.h"
 #include "TopologyNode.h"
@@ -43,6 +44,7 @@
 #include <QStandardPaths>
 #include <QDir>
 #include <QFile>
+#include <QSettings>
 #include <QFileInfo>
 #include <QCoreApplication>
 
@@ -125,6 +127,9 @@ void MainWindow::setupMenuBar()
     m_actSaveAs->setShortcut(QKeySequence::SaveAs);
 
     fileMenu->addSeparator();
+    m_recentMenu = fileMenu->addMenu(tr("Zuletzt geöffnet"));
+    updateRecentFilesMenu();
+    fileMenu->addSeparator();
     fileMenu->addAction(tr("Katalogdatei &importieren…"), this, &MainWindow::onImportCatalogFile);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("&Beenden"), qApp, &QApplication::quit, QKeySequence::Quit);
@@ -138,6 +143,8 @@ void MainWindow::setupMenuBar()
     QMenu *projectMenu = menuBar()->addMenu(tr("&Projekt"));
     m_actAddGroupAddr = projectMenu->addAction(tr("Gruppenadresse hinzufügen…"),
                                                this, &MainWindow::addGroupAddress);
+    projectMenu->addAction(tr("Gruppenadressen aus CSV importieren…"),
+                           this, &MainWindow::onImportGaCsv);
 
     QMenu *busMenu = menuBar()->addMenu(tr("&Bus"));
     m_actConnect    = busMenu->addAction(tr("&Verbinden…"),     this, &MainWindow::onConnectClicked);
@@ -348,6 +355,7 @@ void MainWindow::openProject()
     m_propertiesPanel->setProject(m_project.get());
     m_deviceEditor->clearDevice();
     m_propertiesPanel->clearSelection();
+    addToRecentFiles(path);
     updateWindowTitle();
     statusBar()->showMessage(tr("Projekt geladen: %1").arg(path));
 }
@@ -364,6 +372,7 @@ void MainWindow::saveProject()
         return;
     }
     m_modified = false;
+    addToRecentFiles(m_currentFilePath);
     updateWindowTitle();
     statusBar()->showMessage(tr("Gespeichert: %1").arg(m_currentFilePath));
 }
@@ -552,6 +561,112 @@ void MainWindow::onImportCatalogFile()
     m_projectTree->setCatalog(m_catalog.get());
     const int count = m_catalog->count();
     statusBar()->showMessage(tr("Katalog geladen: %1 Produkt(e)").arg(count));
+}
+
+void MainWindow::onImportGaCsv()
+{
+    if (!m_project) return;
+
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Gruppenadressen aus CSV importieren"), QString(),
+        tr("CSV-Dateien (*.csv);;Alle Dateien (*)"));
+    if (path.isEmpty()) return;
+
+    GaCsvImportDialog dlg(path, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const QList<GroupAddress> &imported = dlg.addresses();
+    if (imported.isEmpty()) return;
+
+    int added = 0;
+    for (const GroupAddress &ga : imported) {
+        if (!m_project->findGroupAddress(ga.toString())) {
+            m_project->addGroupAddress(ga);
+            ++added;
+        }
+    }
+
+    if (added > 0) {
+        m_projectTree->refresh();
+        refreshGroupMonitor();
+        markModified();
+        statusBar()->showMessage(tr("%1 Gruppenadresse(n) importiert (%2 übersprungen)")
+            .arg(added).arg(imported.size() - added));
+    } else {
+        statusBar()->showMessage(tr("Alle %1 Adressen bereits vorhanden – nichts importiert.")
+            .arg(imported.size()));
+    }
+}
+
+void MainWindow::addToRecentFiles(const QString &path)
+{
+    if (path.isEmpty()) return;
+    QSettings s;
+    QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
+    recent.removeAll(path);
+    recent.prepend(path);
+    while (recent.size() > 8)
+        recent.removeLast();
+    s.setValue(QStringLiteral("recentFiles"), recent);
+    updateRecentFilesMenu();
+}
+
+void MainWindow::updateRecentFilesMenu()
+{
+    if (!m_recentMenu) return;
+    m_recentMenu->clear();
+    const QStringList recent = QSettings().value(QStringLiteral("recentFiles")).toStringList();
+    if (recent.isEmpty()) {
+        m_recentMenu->addAction(tr("(Keine)"))->setEnabled(false);
+        return;
+    }
+    for (const QString &path : recent) {
+        const QString label = QFileInfo(path).fileName()
+                              + QStringLiteral("  [") + QFileInfo(path).dir().dirName() + QLatin1Char(']');
+        m_recentMenu->addAction(label, this, [this, path](){ onOpenRecentFile(path); });
+    }
+    m_recentMenu->addSeparator();
+    m_recentMenu->addAction(tr("Liste leeren"), this, [this](){
+        QSettings().remove(QStringLiteral("recentFiles"));
+        updateRecentFilesMenu();
+    });
+}
+
+void MainWindow::onOpenRecentFile(const QString &path)
+{
+    if (!QFile::exists(path)) {
+        QMessageBox::warning(this, tr("Datei nicht gefunden"),
+            tr("Die Datei wurde nicht gefunden:\n%1").arg(path));
+        // Remove from recent list
+        QSettings s;
+        QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
+        recent.removeAll(path);
+        s.setValue(QStringLiteral("recentFiles"), recent);
+        updateRecentFilesMenu();
+        return;
+    }
+    if (!maybeSave()) return;
+
+    auto loaded = KnxprojSerializer::load(path);
+    if (!loaded) {
+        QMessageBox::critical(this, tr("Fehler"),
+            tr("Projekt konnte nicht geöffnet werden:\n%1").arg(path));
+        return;
+    }
+
+    m_project = std::move(loaded);
+    m_currentFilePath = path;
+    m_modified = false;
+    m_undoStack->clear();
+
+    m_projectTree->setProject(m_project.get());
+    m_groupMonitor->setProject(m_project.get());
+    m_propertiesPanel->setProject(m_project.get());
+    m_deviceEditor->clearDevice();
+    m_propertiesPanel->clearSelection();
+    addToRecentFiles(path);
+    updateWindowTitle();
+    statusBar()->showMessage(tr("Projekt geladen: %1").arg(path));
 }
 
 void MainWindow::onLineScanClicked()
