@@ -18,36 +18,63 @@
 #include <QCheckBox>
 #include <QMessageBox>
 #include <QSettings>
+#include <QFileDialog>
+#include <QFile>
+#include <QTextStream>
+#include <QRegularExpression>
+#include <QTimer>
+#include <cmath>
 
-// ─── Custom proxy to combine text filter + "only group telegrams" flag ────────
+// ─── Custom proxy: text filter + only-groups flag + source/dest/type regex ───
 class BusMonitorProxy : public QSortFilterProxyModel
 {
 public:
     explicit BusMonitorProxy(QObject *parent = nullptr)
         : QSortFilterProxyModel(parent) {}
 
-    void setOnlyGroups(bool b) { m_onlyGroups = b; invalidateFilter(); }
+    void setOnlyGroups(bool b)                    { m_onlyGroups = b; invalidateFilter(); }
+    void setSourceRegex(const QRegularExpression &re) { m_srcRe = re; invalidateFilter(); }
+    void setDestRegex(const QRegularExpression &re)   { m_dstRe = re; invalidateFilter(); }
+    // typeKeyword: "", "Write", "Read", "Response"
+    void setTypeKeyword(const QString &kw)        { m_typeKw = kw; invalidateFilter(); }
 
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const override
     {
+        const auto *src = sourceModel();
+
         if (m_onlyGroups) {
-            const auto *src = sourceModel();
-            const QModelIndex typeIdx = src->index(sourceRow, BusMonitorModel::ColType, sourceParent);
-            if (!src->data(typeIdx).toString().startsWith(QLatin1String("GroupValue")))
+            const QModelIndex ti = src->index(sourceRow, BusMonitorModel::ColType, sourceParent);
+            if (!src->data(ti).toString().startsWith(QLatin1String("GroupValue")))
+                return false;
+        }
+        if (m_srcRe.isValid() && !m_srcRe.pattern().isEmpty()) {
+            const QModelIndex si = src->index(sourceRow, BusMonitorModel::ColSource, sourceParent);
+            if (!m_srcRe.match(src->data(si).toString()).hasMatch())
+                return false;
+        }
+        if (m_dstRe.isValid() && !m_dstRe.pattern().isEmpty()) {
+            const QModelIndex di = src->index(sourceRow, BusMonitorModel::ColDestination, sourceParent);
+            if (!m_dstRe.match(src->data(di).toString()).hasMatch())
+                return false;
+        }
+        if (!m_typeKw.isEmpty()) {
+            const QModelIndex ti = src->index(sourceRow, BusMonitorModel::ColType, sourceParent);
+            if (!src->data(ti).toString().contains(m_typeKw))
                 return false;
         }
         return QSortFilterProxyModel::filterAcceptsRow(sourceRow, sourceParent);
     }
 
-    bool m_onlyGroups = false;
+private:
+    bool              m_onlyGroups = false;
+    QRegularExpression m_srcRe;
+    QRegularExpression m_dstRe;
+    QString           m_typeKw;
 };
-#include <QtMath>
-#include <cmath>
 
 // ─── DPT encoding ─────────────────────────────────────────────────────────────
 
-// DPT combo index → (label, encoding logic in encodeValue)
 static const struct { const char *label; } kDpts[] = {
     { "DPT 1.x – Bool (0/1)"            },  // 0
     { "DPT 5.001 – Prozent (0–100 %)"   },  // 1
@@ -67,8 +94,6 @@ static QByteArray encodeKnxFloat(double value)
     int E = 0;
     while (M > 2047 && E < 15) { M >>= 1; ++E; }
     M = qBound(0, M, 2047);
-    // Byte 1: S(1) | E(4) | M[10..8](3)
-    // Byte 2: M[7..0](8)
     const uint8_t b0 = static_cast<uint8_t>((negative ? 0x80 : 0x00) |
                                              ((E & 0x0F) << 3) |
                                              ((M >> 8) & 0x07));
@@ -81,38 +106,34 @@ QByteArray BusMonitorWidget::encodeValue(int dptIndex, const QString &text)
     QString t = text.trimmed();
     bool ok = false;
     switch (dptIndex) {
-    case 0: {   // DPT 1.x  — inline 1-bit value
+    case 0: {
         const uint8_t v = (t == QLatin1String("1") || t.toLower() == QLatin1String("true")
                           || t.toLower() == QLatin1String("ein")) ? 1 : 0;
         return QByteArray(1, static_cast<char>(v));
     }
-    case 1: {   // DPT 5.001 — percentage 0-100 → 0-255
+    case 1: {
         double pct = t.toDouble(&ok);
         if (!ok) return {};
         const uint8_t raw = static_cast<uint8_t>(qBound(0.0, pct * 255.0 / 100.0, 255.0));
         return QByteArray(1, static_cast<char>(raw));
     }
-    case 2: {   // DPT 5.010 — uint8 0-255
+    case 2: {
         int val = t.toInt(&ok);
         if (!ok) return {};
         return QByteArray(1, static_cast<char>(qBound(0, val, 255)));
     }
-    case 3:
-    case 4:
-    case 5:
-    case 6: {   // DPT 9.x — KNX 2-byte float
+    case 3: case 4: case 5: case 6: {
         double val = t.toDouble(&ok);
         if (!ok) return {};
         return encodeKnxFloat(val);
     }
-    case 7: {   // Raw hex
+    case 7: {
         const QByteArray hex = QByteArray::fromHex(t.remove(QStringLiteral("0x"))
                                                      .remove(QLatin1Char(' '))
                                                      .toLatin1());
         return hex.isEmpty() ? QByteArray(1, '\0') : hex;
     }
-    default:
-        return {};
+    default: return {};
     }
 }
 
@@ -121,7 +142,6 @@ QByteArray BusMonitorWidget::encodeValue(int dptIndex, const QString &text)
 BusMonitorWidget::BusMonitorWidget(QWidget *parent)
     : QWidget(parent)
     , m_model(new BusMonitorModel(this))
-
     , m_proxy(new BusMonitorProxy(this))
     , m_view(new QTableView(this))
     , m_startStop(new QPushButton(tr("Pause"), this))
@@ -129,13 +149,19 @@ BusMonitorWidget::BusMonitorWidget(QWidget *parent)
     , m_filter(new QLineEdit(this))
     , m_onlyGroups(new QCheckBox(tr("Nur Gruppen"), this))
     , m_counter(new QLabel(tr("0 Telegramme"), this))
+    , m_srcFilter(new QLineEdit(this))
+    , m_dstFilter(new QLineEdit(this))
+    , m_typeFilter(new QComboBox(this))
+    , m_tsFormat(new QComboBox(this))
+    , m_exportBtn(new QPushButton(tr("CSV↓"), this))
     , m_sendGa(new QLineEdit(this))
     , m_sendDpt(new QComboBox(this))
     , m_sendValue(new QLineEdit(this))
     , m_sendBtn(new QPushButton(tr("Senden"), this))
     , m_readBtn(new QPushButton(tr("Lesen"), this))
 {
-    const int maxE = QSettings().value(QStringLiteral("busMonitor/maxEntries"), 2000).toInt();
+    const QSettings s;
+    const int maxE = s.value(QStringLiteral("busMonitor/maxEntries"), 2000).toInt();
     m_model->setMaxEntries(qMax(100, maxE));
 
     auto *layout = new QVBoxLayout(this);
@@ -145,17 +171,48 @@ BusMonitorWidget::BusMonitorWidget(QWidget *parent)
     header->setStyleSheet(QStringLiteral("font-weight: bold; font-size: 11pt;"));
     layout->addWidget(header);
 
-    // ── Toolbar ────────────────────────────────────────────────────────────────
-    auto *toolbar = new QHBoxLayout;
-    toolbar->addWidget(m_startStop);
-    toolbar->addWidget(m_clear);
-    m_filter->setPlaceholderText(tr("Filter (Quelle/Ziel/Typ)…"));
+    // ── Toolbar row 1: start/stop, clear, text filter, only-groups, counter ──
+    auto *toolbar1 = new QHBoxLayout;
+    toolbar1->addWidget(m_startStop);
+    toolbar1->addWidget(m_clear);
+    m_filter->setPlaceholderText(tr("Freitext-Filter (alle Spalten)…"));
     m_filter->setClearButtonEnabled(true);
-    toolbar->addWidget(m_filter, 1);
+    toolbar1->addWidget(m_filter, 1);
     m_onlyGroups->setToolTip(tr("Nur Gruppenwert-Telegramme anzeigen"));
-    toolbar->addWidget(m_onlyGroups);
-    toolbar->addWidget(m_counter);
-    layout->addLayout(toolbar);
+    toolbar1->addWidget(m_onlyGroups);
+    toolbar1->addWidget(m_counter);
+    layout->addLayout(toolbar1);
+
+    // ── Toolbar row 2: source regex, dest regex, type, timestamp format, export ─
+    auto *toolbar2 = new QHBoxLayout;
+    m_srcFilter->setPlaceholderText(tr("Quelle (Regex)"));
+    m_srcFilter->setClearButtonEnabled(true);
+    m_srcFilter->setMaximumWidth(160);
+    toolbar2->addWidget(new QLabel(tr("Quelle:"), this));
+    toolbar2->addWidget(m_srcFilter);
+
+    m_dstFilter->setPlaceholderText(tr("Ziel (Regex)"));
+    m_dstFilter->setClearButtonEnabled(true);
+    m_dstFilter->setMaximumWidth(160);
+    toolbar2->addWidget(new QLabel(tr("Ziel:"), this));
+    toolbar2->addWidget(m_dstFilter);
+
+    m_typeFilter->addItem(tr("Alle Typen"),        QString());
+    m_typeFilter->addItem(tr("GroupValueWrite"),   QStringLiteral("Write"));
+    m_typeFilter->addItem(tr("GroupValueRead"),    QStringLiteral("Read"));
+    m_typeFilter->addItem(tr("GroupValueResponse"),QStringLiteral("Response"));
+    toolbar2->addWidget(new QLabel(tr("Typ:"), this));
+    toolbar2->addWidget(m_typeFilter);
+
+    m_tsFormat->addItem(tr("Absolut"), false);
+    m_tsFormat->addItem(tr("Relativ"), true);
+    toolbar2->addWidget(new QLabel(tr("Zeit:"), this));
+    toolbar2->addWidget(m_tsFormat);
+
+    toolbar2->addStretch(1);
+    m_exportBtn->setToolTip(tr("Sichtbare Zeilen als CSV exportieren"));
+    toolbar2->addWidget(m_exportBtn);
+    layout->addLayout(toolbar2);
 
     // ── Telegram table ─────────────────────────────────────────────────────────
     m_proxy->setSourceModel(m_model);
@@ -198,13 +255,20 @@ BusMonitorWidget::BusMonitorWidget(QWidget *parent)
     layout->addWidget(sendBox);
 
     // ── Signals ────────────────────────────────────────────────────────────────
-    connect(m_startStop,  &QPushButton::clicked,  this, &BusMonitorWidget::onStartStopClicked);
-    connect(m_clear,      &QPushButton::clicked,  this, &BusMonitorWidget::onClearClicked);
-    connect(m_filter,     &QLineEdit::textChanged,this, &BusMonitorWidget::onFilterChanged);
-    connect(m_onlyGroups, &QCheckBox::toggled,    this, &BusMonitorWidget::onOnlyGroupsToggled);
-    connect(m_sendBtn,    &QPushButton::clicked,  this, &BusMonitorWidget::onSendClicked);
-    connect(m_readBtn,    &QPushButton::clicked,  this, &BusMonitorWidget::onReadClicked);
-    connect(m_sendValue,  &QLineEdit::returnPressed, this, &BusMonitorWidget::onSendClicked);
+    connect(m_startStop,  &QPushButton::clicked,       this, &BusMonitorWidget::onStartStopClicked);
+    connect(m_clear,      &QPushButton::clicked,       this, &BusMonitorWidget::onClearClicked);
+    connect(m_filter,     &QLineEdit::textChanged,     this, &BusMonitorWidget::onFilterChanged);
+    connect(m_onlyGroups, &QCheckBox::toggled,         this, &BusMonitorWidget::onOnlyGroupsToggled);
+    connect(m_srcFilter,  &QLineEdit::textChanged,     this, &BusMonitorWidget::onSrcFilterChanged);
+    connect(m_dstFilter,  &QLineEdit::textChanged,     this, &BusMonitorWidget::onDstFilterChanged);
+    connect(m_typeFilter, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &BusMonitorWidget::onTypeFilterChanged);
+    connect(m_tsFormat,   QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &BusMonitorWidget::onTsFormatChanged);
+    connect(m_exportBtn,  &QPushButton::clicked,       this, &BusMonitorWidget::onExportCsv);
+    connect(m_sendBtn,    &QPushButton::clicked,       this, &BusMonitorWidget::onSendClicked);
+    connect(m_readBtn,    &QPushButton::clicked,       this, &BusMonitorWidget::onReadClicked);
+    connect(m_sendValue,  &QLineEdit::returnPressed,   this, &BusMonitorWidget::onSendClicked);
 }
 
 // ─── Interface ────────────────────────────────────────────────────────────────
@@ -258,6 +322,71 @@ void BusMonitorWidget::onFilterChanged(const QString &text)
 void BusMonitorWidget::onOnlyGroupsToggled(bool checked)
 {
     m_proxy->setOnlyGroups(checked);
+}
+
+void BusMonitorWidget::onSrcFilterChanged(const QString &text)
+{
+    m_proxy->setSourceRegex(QRegularExpression(text, QRegularExpression::CaseInsensitiveOption));
+}
+
+void BusMonitorWidget::onDstFilterChanged(const QString &text)
+{
+    m_proxy->setDestRegex(QRegularExpression(text, QRegularExpression::CaseInsensitiveOption));
+}
+
+void BusMonitorWidget::onTypeFilterChanged(int index)
+{
+    m_proxy->setTypeKeyword(m_typeFilter->itemData(index).toString());
+}
+
+void BusMonitorWidget::onTsFormatChanged(int index)
+{
+    m_model->setRelativeTimestamps(m_tsFormat->itemData(index).toBool());
+}
+
+void BusMonitorWidget::onExportCsv()
+{
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Busmonitor als CSV exportieren"), {},
+        tr("CSV-Dateien (*.csv);;Alle Dateien (*)"));
+    if (path.isEmpty()) return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, tr("Fehler"),
+            tr("Datei konnte nicht geöffnet werden:\n%1").arg(f.errorString()));
+        return;
+    }
+
+    QTextStream out(&f);
+    // CSV header
+    const QStringList headers = {
+        tr("Zeit"), tr("Quelle"), tr("Ziel"), tr("Typ"), tr("Wert / DPT"), tr("Rohdaten")
+    };
+    out << headers.join(QLatin1Char(';')) << QLatin1Char('\n');
+
+    // Rows — only what the proxy currently shows
+    const int rows = m_proxy->rowCount();
+    const int cols = m_proxy->columnCount();
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            if (c > 0) out << QLatin1Char(';');
+            QString cell = m_proxy->data(m_proxy->index(r, c)).toString();
+            // Quote cells that contain delimiter, quote or newline
+            if (cell.contains(QLatin1Char(';')) || cell.contains(QLatin1Char('"'))
+                    || cell.contains(QLatin1Char('\n'))) {
+                cell.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+                cell = QLatin1Char('"') + cell + QLatin1Char('"');
+            }
+            out << cell;
+        }
+        out << QLatin1Char('\n');
+    }
+    // status feedback via counter label
+    m_counter->setText(tr("%1 Zeilen exportiert").arg(rows));
+    QTimer::singleShot(3000, m_counter, [this](){
+        m_counter->setText(tr("%1 Telegramme").arg(m_totalRows));
+    });
 }
 
 void BusMonitorWidget::onSendClicked()

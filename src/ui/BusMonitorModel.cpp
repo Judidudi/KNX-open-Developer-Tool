@@ -42,11 +42,8 @@ void BusMonitorModel::appendCemi(const QByteArray &cemi)
     if (isWrite || isResponse) {
         e.type = isWrite ? tr("GroupValueWrite") : tr("GroupValueResponse");
 
-        // Try DPT-aware decoding for known group addresses
         const QString dpt = frame.groupAddress ? dptForGa(frame.destAddress) : QString();
         if (!dpt.isEmpty()) {
-            // Build a minimal apdu suitable for DptRegistry::decode:
-            // GroupValue payload follows APCI; DptRegistry expects APDU with payload
             const QByteArray payload = frame.groupValuePayload();
             const QString decoded    = DptRegistry::decode(dpt, payload);
             e.value = decoded + QStringLiteral("  [") + dpt + QLatin1Char(']');
@@ -83,6 +80,14 @@ void BusMonitorModel::clear()
     endResetModel();
 }
 
+void BusMonitorModel::setRelativeTimestamps(bool rel)
+{
+    if (m_relativeTimestamps == rel) return;
+    m_relativeTimestamps = rel;
+    if (!m_entries.isEmpty())
+        emit dataChanged(index(0, ColTime), index(m_entries.size() - 1, ColTime));
+}
+
 int BusMonitorModel::rowCount(const QModelIndex &parent) const
 {
     return parent.isValid() ? 0 : m_entries.size();
@@ -100,7 +105,19 @@ QVariant BusMonitorModel::data(const QModelIndex &index, int role) const
 
     if (role == Qt::DisplayRole) {
         switch (index.column()) {
-        case ColTime:        return e.timestamp.toString(QStringLiteral("HH:mm:ss.zzz"));
+        case ColTime: {
+            if (m_relativeTimestamps && !m_entries.isEmpty()) {
+                const qint64 ms = m_entries.first().timestamp.msecsTo(e.timestamp);
+                const int mins  = static_cast<int>(ms / 60000);
+                const int secs  = static_cast<int>((ms % 60000) / 1000);
+                const int msec  = static_cast<int>(ms % 1000);
+                return QStringLiteral("+%1:%2.%3")
+                    .arg(mins, 2, 10, QLatin1Char('0'))
+                    .arg(secs, 2, 10, QLatin1Char('0'))
+                    .arg(msec, 3, 10, QLatin1Char('0'));
+            }
+            return e.timestamp.toString(QStringLiteral("HH:mm:ss.zzz"));
+        }
         case ColSource:      return e.source;
         case ColDestination: return e.destination;
         case ColType:        return e.type;

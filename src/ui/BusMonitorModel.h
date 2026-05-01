@@ -47,6 +47,9 @@ public:
     void setMaxEntries(int max) { m_maxEntries = qMax(100, max); }
     int  maxEntries() const     { return m_maxEntries; }
 
+    void setRelativeTimestamps(bool rel);
+    bool relativeTimestamps() const { return m_relativeTimestamps; }
+
     const Entry &entryAt(int row) const { return m_entries.at(row); }
 
     // QAbstractTableModel
@@ -58,7 +61,8 @@ public:
 private:
     QString dptForGa(uint16_t raw) const;
 
-    QList<Entry>           m_entries;
+    QList<Entry>            m_entries;
     QMap<uint16_t, QString> m_gaDptMap;   // raw GA address → DPT string
-    int                    m_maxEntries = 2000;
+    int                     m_maxEntries = 2000;
+    bool                    m_relativeTimestamps = false;
 };
