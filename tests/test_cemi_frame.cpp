@@ -95,6 +95,79 @@ private slots:
         QVERIFY(f.isGroupValueWrite());
         QCOMPARE(f.groupValuePayload(), QByteArray(1, char(0x01)));
     }
+
+    void buildMemoryReadFrame()
+    {
+        QByteArray bytes = CemiFrame::buildMemoryRead(0x1101, 0x4400, 10);
+        CemiFrame f = CemiFrame::fromBytes(bytes);
+        QCOMPARE(f.destAddress,  uint16_t(0x1101));
+        QCOMPARE(f.groupAddress, false);
+        QVERIFY(f.apdu.size() >= 4);
+        // APCI bits[9:6] = 0b1000 = A_Memory_Read, count in low 6 bits
+        QCOMPARE(static_cast<uint8_t>(f.apdu[1]) & 0x3F, uint8_t(10));
+        QCOMPARE(static_cast<uint8_t>(f.apdu[2]), uint8_t(0x44));
+        QCOMPARE(static_cast<uint8_t>(f.apdu[3]), uint8_t(0x00));
+    }
+
+    void buildMemoryReadClampCount()
+    {
+        // count > 63 should be clamped to 63
+        QByteArray bytes = CemiFrame::buildMemoryRead(0x1101, 0x4000, 100);
+        CemiFrame f = CemiFrame::fromBytes(bytes);
+        QCOMPARE(static_cast<uint8_t>(f.apdu[1]) & 0x3F, uint8_t(63));
+    }
+
+    void isMemoryResponseTrue()
+    {
+        // Build a synthetic A_Memory_Response frame (APCI 0x240 | count)
+        CemiFrame f;
+        f.messageCode   = CemiFrame::MessageCode::LDataInd;
+        f.sourceAddress = 0x1101;
+        f.destAddress   = 0x0000;
+        f.groupAddress  = false;
+        // APDU: [TPCI|0x42][0x40|count=4][addr_hi][addr_lo][d0][d1][d2][d3]
+        f.apdu.append(char(0x42));
+        f.apdu.append(char(0x40 | 4));  // A_Memory_Response, 4 bytes
+        f.apdu.append(char(0x40));      // address high byte
+        f.apdu.append(char(0x00));      // address low byte
+        f.apdu.append(char(0x01));
+        f.apdu.append(char(0x02));
+        f.apdu.append(char(0x03));
+        f.apdu.append(char(0x04));
+
+        QVERIFY(f.isMemoryResponse());
+
+        uint16_t addr = 0;
+        QByteArray data;
+        QVERIFY(f.memoryResponseData(addr, data));
+        QCOMPARE(addr, uint16_t(0x4000));
+        QCOMPARE(data.size(), 4);
+        QCOMPARE(static_cast<uint8_t>(data[0]), uint8_t(0x01));
+        QCOMPARE(static_cast<uint8_t>(data[3]), uint8_t(0x04));
+    }
+
+    void isMemoryResponseFalseForGroupTelegram()
+    {
+        CemiFrame f;
+        f.groupAddress = true;
+        f.apdu.append(char(0x00));
+        f.apdu.append(char(0x40 | 4));
+        f.apdu.append(char(0x40));
+        f.apdu.append(char(0x00));
+        QVERIFY(!f.isMemoryResponse());
+    }
+
+    void memoryResponseDataReturnsFalseForShortApdu()
+    {
+        CemiFrame f;
+        f.groupAddress = false;
+        f.apdu.append(char(0x42));
+        f.apdu.append(char(0x40 | 4));  // claims 4 bytes but we don't have them
+        // Only 2 bytes in apdu → size < 4
+        uint16_t addr = 0;
+        QByteArray data;
+        QVERIFY(!f.memoryResponseData(addr, data));
+    }
 };
 
 QTEST_MAIN(TestCemiFrame)

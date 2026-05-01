@@ -4,9 +4,10 @@ function(add_knxodt_test TARGET SOURCE)
     add_test(NAME ${TARGET} COMMAND ${TARGET})
 endfunction()
 
-add_knxodt_test(test_groupaddress    test_groupaddress.cpp)
-add_knxodt_test(test_project_model   test_project_model.cpp)
-add_knxodt_test(test_xml_serializer  test_xml_serializer.cpp)
+add_knxodt_test(test_groupaddress           test_groupaddress.cpp)
+add_knxodt_test(test_project_model          test_project_model.cpp)
+add_knxodt_test(test_xml_serializer         test_xml_serializer.cpp)
+add_knxodt_test(test_parameter_visibility   test_parameter_visibility.cpp)
 
 add_knxodt_test(test_knxprod_parser test_knxprod_parser.cpp)
 

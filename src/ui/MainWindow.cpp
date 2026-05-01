@@ -13,6 +13,7 @@
 #include "dialogs/LineScanDialog.h"
 #include "dialogs/GaCsvImportDialog.h"
 #include "dialogs/BatchProgramDialog.h"
+#include "dialogs/SettingsDialog.h"
 
 #include "Project.h"
 #include "TopologyNode.h"
@@ -50,6 +51,7 @@
 #include <QSettings>
 #include <QFileInfo>
 #include <QCoreApplication>
+#include <QTimer>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -86,6 +88,16 @@ MainWindow::MainWindow(QWidget *parent)
     updateConnectionUi();
     updateWindowTitle();
     resize(1280, 800);
+
+    // Startup actions based on saved settings (deferred to after window is shown)
+    QTimer::singleShot(0, this, [this]() {
+        const QSettings s;
+        if (s.value(QStringLiteral("project/openLastOnStart"), false).toBool()) {
+            const QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
+            if (!recent.isEmpty() && QFile::exists(recent.first()))
+                onOpenRecentFile(recent.first());
+        }
+    });
 }
 
 MainWindow::~MainWindow() = default;
@@ -162,6 +174,12 @@ void MainWindow::setupMenuBar()
     m_actLineScan     = busMenu->addAction(tr("&Leitungsscan…"),        this, &MainWindow::onLineScanClicked);
     busMenu->addSeparator();
     m_actProgram      = busMenu->addAction(tr("Gerät &programmieren…"), this, &MainWindow::onProgramClicked);
+
+    QMenu *extrasMenu = menuBar()->addMenu(tr("&Extras"));
+    extrasMenu->addAction(tr("&Einstellungen…"), this, [this](){
+        SettingsDialog dlg(this);
+        dlg.exec();
+    });
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Hilfe"));
     helpMenu->addAction(tr("Über KNX open Developer Tool…"), this, [this](){

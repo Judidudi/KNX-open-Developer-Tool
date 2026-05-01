@@ -64,6 +64,13 @@ void BusMonitorModel::appendCemi(const QByteArray &cemi)
     }
     e.raw = QString::fromLatin1(cemi.toHex(' ').toUpper());
 
+    // Enforce ring buffer: remove oldest entry when full
+    if (m_entries.size() >= m_maxEntries) {
+        beginRemoveRows({}, 0, 0);
+        m_entries.removeFirst();
+        endRemoveRows();
+    }
+
     beginInsertRows({}, m_entries.size(), m_entries.size());
     m_entries.append(e);
     endInsertRows();

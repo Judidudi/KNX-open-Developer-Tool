@@ -17,6 +17,7 @@
 #include <QSortFilterProxyModel>
 #include <QCheckBox>
 #include <QMessageBox>
+#include <QSettings>
 
 // ─── Custom proxy to combine text filter + "only group telegrams" flag ────────
 class BusMonitorProxy : public QSortFilterProxyModel
@@ -120,6 +121,7 @@ QByteArray BusMonitorWidget::encodeValue(int dptIndex, const QString &text)
 BusMonitorWidget::BusMonitorWidget(QWidget *parent)
     : QWidget(parent)
     , m_model(new BusMonitorModel(this))
+
     , m_proxy(new BusMonitorProxy(this))
     , m_view(new QTableView(this))
     , m_startStop(new QPushButton(tr("Pause"), this))
@@ -133,6 +135,9 @@ BusMonitorWidget::BusMonitorWidget(QWidget *parent)
     , m_sendBtn(new QPushButton(tr("Senden"), this))
     , m_readBtn(new QPushButton(tr("Lesen"), this))
 {
+    const int maxE = QSettings().value(QStringLiteral("busMonitor/maxEntries"), 2000).toInt();
+    m_model->setMaxEntries(qMax(100, maxE));
+
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(6, 6, 6, 6);
 

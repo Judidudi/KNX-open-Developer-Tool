@@ -9,8 +9,10 @@ on:
 env:
   LINUXDEPLOY_VERSION: "1-alpha-20240109-1"
   LINUXDEPLOY_QT_VERSION: "continuous"
+  QT_VERSION: "6.7.3"
 
 jobs:
+  # ─── Linux ──────────────────────────────────────────────────────────────────
   build-linux:
     name: Linux (Ubuntu 24.04, Qt6)
     runs-on: ubuntu-24.04
@@ -88,4 +90,121 @@ jobs:
         with:
           name: KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-linux-x86_64
           path: KNXOpenDeveloperTool-*-x86_64.AppImage
+          retention-days: 30
+
+  # ─── Windows ────────────────────────────────────────────────────────────────
+  build-windows:
+    name: Windows (Qt ${{ env.QT_VERSION }}, MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Qt via aqtinstall
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: "qtserialport"
+          cache: true
+
+      - name: Cache MSVC compiler output
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/Microsoft/VisualStudio
+          key: msvc-${{ github.sha }}
+          restore-keys: msvc-
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          VER=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Qt dependencies
+        shell: cmd
+        run: |
+          mkdir deploy
+          copy build\app\KNXOpenDeveloperTool.exe deploy\
+          windeployqt --release --no-translations deploy\KNXOpenDeveloperTool.exe
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path deploy\* `
+            -DestinationPath "KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-windows-x64.zip"
+
+      - name: Upload Windows ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-windows-x64
+          path: KNXOpenDeveloperTool-*-windows-x64.zip
+          retention-days: 30
+
+  # ─── macOS ──────────────────────────────────────────────────────────────────
+  build-macos:
+    name: macOS (Qt ${{ env.QT_VERSION }}, Apple Silicon)
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Qt via aqtinstall
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: "qtserialport"
+          cache: true
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="${Qt6_DIR}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Determine version
+        id: version
+        run: |
+          VER=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Create macOS app bundle
+        run: |
+          macdeployqt build/app/KNXOpenDeveloperTool.app -dmg
+          mv build/app/KNXOpenDeveloperTool.dmg \
+             "KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-macos.dmg"
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-macos
+          path: KNXOpenDeveloperTool-*-macos.dmg
           retention-days: 30
