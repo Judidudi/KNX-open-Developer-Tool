@@ -36,10 +36,19 @@ public:
 
     QList<KnxHardwareProduct> products() const { return m_products; }
 
+    // Diagnostics from the most recent reload() / loadKnxprod() call.
+    // Each entry is a single human-readable line ("[file]: reason …").
+    const QStringList &lastErrors() const { return m_lastErrors; }
+
+    // Load a single file directly (used by import dialogs). Returns the number
+    // of products successfully added; errors are appended to lastErrors().
+    int importFile(const QString &path);
+
 private:
     bool loadKnxprod(const QString &path);
 
     QStringList                    m_paths;
     QList<KnxHardwareProduct>      m_products;
     QMap<QString, std::shared_ptr<KnxApplicationProgram>> m_appPrograms;
+    QStringList                    m_lastErrors;
 };

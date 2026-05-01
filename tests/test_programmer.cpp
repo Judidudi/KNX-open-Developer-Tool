@@ -8,50 +8,80 @@
 #include "GroupAddress.h"
 
 // ─── Mock KNX interface ───────────────────────────────────────────────────────
+//
+// Auto-ACKs every T_Data_Connected frame we send (simulating a KNX device that
+// is present and responding).  Supports injecting specific frames from the
+// "device" side for prog-mode detection and memory responses.
 
 class MockInterface : public IKnxInterface
 {
     Q_OBJECT
 public:
-    explicit MockInterface(QObject *parent = nullptr) : IKnxInterface(parent)
-    { m_connected = true; }
+    explicit MockInterface(QObject *parent = nullptr) : IKnxInterface(parent) {}
 
     bool connectToInterface() override    { return true; }
     void disconnectFromInterface() override {}
     bool isConnected() const override     { return m_connected; }
 
     void sendCemiFrame(const QByteArray &cemi) override
-    { m_sent.append(cemi); }
+    {
+        m_sent.append(cemi);
+        if (!m_autoAck) return;
 
-    void injectFrame(const QByteArray &cemi)
-    { emit cemiFrameReceived(cemi); }
+        const CemiFrame f = CemiFrame::fromBytes(cemi);
+        if (!f.groupAddress && f.isTDataConnected()) {
+            // Queue a fake T_ACK from the device (source = our destination)
+            const uint8_t seq = f.tSeqNumber();
+            const uint16_t devPa = f.destAddress;
+            QMetaObject::invokeMethod(this, [this, seq, devPa]() {
+                CemiFrame ack;
+                ack.messageCode   = CemiFrame::MessageCode::LDataInd;
+                ack.sourceAddress = devPa;    // ACK comes FROM the device
+                ack.destAddress   = 0x0000;
+                ack.groupAddress  = false;
+                ack.apdu.append(static_cast<char>(0xC2 | ((seq & 0x0F) << 2)));
+                emit cemiFrameReceived(ack.toBytes());
+            }, Qt::QueuedConnection);
+        }
+    }
 
-    QList<QByteArray> m_sent;
-    bool              m_connected = true;
+    // Simulate a device in programming mode responding to IndividualAddress_Read.
+    void injectProgModeResponse(const QString &physAddr)
+    {
+        CemiFrame resp;
+        resp.messageCode   = CemiFrame::MessageCode::LDataInd;
+        resp.sourceAddress = CemiFrame::physAddrFromString(physAddr);
+        resp.destAddress   = 0x0000;
+        resp.groupAddress  = true;            // broadcast response
+        resp.apdu.append(char(0x01));         // TPCI=0, APCI[9:8]=01
+        resp.apdu.append(char(0x40));         // APCI[7:0]=0x40  →  apci() = 0x140
+        emit cemiFrameReceived(resp.toBytes());
+    }
+
+    // Simulate A_Memory_Response arriving as T_Data_Connected from device.
+    void injectMemoryResponse(const QString &physAddr, uint16_t memAddr,
+                               const QByteArray &payload)
+    {
+        CemiFrame resp;
+        resp.messageCode   = CemiFrame::MessageCode::LDataInd;
+        resp.sourceAddress = CemiFrame::physAddrFromString(physAddr);
+        resp.destAddress   = 0x0000;
+        resp.groupAddress  = false;
+        const uint8_t cnt = static_cast<uint8_t>(qMin<int>(payload.size(), 12));
+        resp.apdu.append(char(0x42));                        // T_Data_Connected[seq=0], APCI[9:8]=10
+        resp.apdu.append(static_cast<char>(0x40 | cnt));     // Memory_Response, count
+        resp.apdu.append(static_cast<char>(memAddr >> 8));
+        resp.apdu.append(static_cast<char>(memAddr & 0xFF));
+        resp.apdu.append(payload.left(cnt));
+        emit cemiFrameReceived(resp.toBytes());
+    }
+
+    bool               m_autoAck   = true;
+    bool               m_connected = true;
+    QList<QByteArray>  m_sent;
 };
 
-// ─── Helper: build a minimal A_Memory_Response frame ─────────────────────────
-
-// Produces a fake A_Memory_Response CEMI from physAddr back to us,
-// reporting `payload` bytes starting at `memAddr`.
-static QByteArray fakeMemoryResponse(const QString &physAddr, uint16_t memAddr,
-                                      const QByteArray &payload)
-{
-    CemiFrame resp;
-    resp.messageCode  = CemiFrame::MessageCode::LDataInd;
-    resp.sourceAddress = CemiFrame::physAddrFromString(physAddr);
-    resp.destAddress  = 0x0000;
-    resp.groupAddress = false;
-    const uint8_t cnt = static_cast<uint8_t>(qMin<int>(payload.size(), 12));
-    resp.apdu.append(char(0x42));
-    resp.apdu.append(static_cast<char>(0x40 | cnt));
-    resp.apdu.append(static_cast<char>(memAddr >> 8));
-    resp.apdu.append(static_cast<char>(memAddr & 0xFF));
-    resp.apdu.append(payload.left(cnt));
-    return resp.toBytes();
-}
-
-// ─── Helpers: build test fixtures ────────────────────────────────────────────
+// ─── Test fixtures ────────────────────────────────────────────────────────────
 
 static KnxApplicationProgram makeApp()
 {
@@ -105,33 +135,83 @@ private slots:
         DeviceInstance dev        = makeDevice(app);
 
         DeviceProgrammer prog(&iface, &dev, &app);
-
         QSignalSpy spy(&prog, &DeviceProgrammer::finished);
         prog.start();
+
         QCOMPARE(spy.count(), 1);
         QCOMPARE(spy.at(0).at(0).toBool(), false);
         QVERIFY(iface.m_sent.isEmpty());
     }
 
-    void sendsPaWriteAfterProgModeWait()
+    void sendsIndividualAddressReadOnStart()
     {
         MockInterface iface;
+        iface.m_autoAck = false;  // keep it simple, just check first frame
         KnxApplicationProgram app = makeApp();
         DeviceInstance dev        = makeDevice(app);
 
         DeviceProgrammer prog(&iface, &dev, &app);
-        prog.setProgModeTimeout(10);
+        prog.setProgModeTimeout(5000);  // long timeout so we can inspect
 
         prog.start();
-        QTRY_VERIFY_WITH_TIMEOUT(!iface.m_sent.isEmpty(), 500);
 
-        // First frame must be an A_IndividualAddress_Write (APCI 0x0C0)
+        // runStep() is queued — spin the event loop once
+        QTRY_VERIFY_WITH_TIMEOUT(!iface.m_sent.isEmpty(), 200);
+
         const CemiFrame f = CemiFrame::fromBytes(iface.m_sent.first());
-        QCOMPARE(f.apci(), uint16_t(0x0C0));
-        QCOMPARE(f.destAddress, uint16_t(0x0000)); // broadcast
+        QCOMPARE(f.apci(), uint16_t(0x100));   // A_IndividualAddress_Read
+        QVERIFY(f.groupAddress);
+        QCOMPARE(f.destAddress, uint16_t(0x0000));  // broadcast
+
+        prog.cancel();
     }
 
-    void sendsMemoryWritesAndSucceedsWithCorrectResponse()
+    void failsWhenNoProgModeDeviceFound()
+    {
+        MockInterface iface;
+        KnxApplicationProgram app = makeApp();
+        DeviceInstance dev        = makeDevice(app);
+
+        DeviceProgrammer prog(&iface, &dev, &app);
+        prog.setProgModeTimeout(10);   // short timeout
+
+        QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
+        prog.start();
+        QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 500);
+
+        QCOMPARE(doneSpy.at(0).at(0).toBool(), false);
+        QVERIFY(doneSpy.at(0).at(1).toString().contains(
+            QStringLiteral("Programmiermodus")));
+    }
+
+    void writesPhysAddressAfterProgModeDetection()
+    {
+        MockInterface iface;
+        iface.m_autoAck = false;  // suppress transport so we can inspect broadcast frames
+        KnxApplicationProgram app = makeApp();
+        DeviceInstance dev        = makeDevice(app);
+
+        DeviceProgrammer prog(&iface, &dev, &app);
+        prog.setProgModeTimeout(5000);
+
+        prog.start();
+        QTRY_VERIFY_WITH_TIMEOUT(!iface.m_sent.isEmpty(), 200);
+
+        // Inject prog-mode response → programmer advances to WritePhysAddress
+        iface.injectProgModeResponse(QStringLiteral("1.1.1"));
+
+        QTRY_VERIFY_WITH_TIMEOUT(iface.m_sent.size() >= 2, 500);
+
+        // Second frame = A_IndividualAddress_Write (APCI 0x0C0), broadcast
+        const CemiFrame f = CemiFrame::fromBytes(iface.m_sent[1]);
+        QCOMPARE(f.apci(), uint16_t(0x0C0));
+        QCOMPARE(f.destAddress, uint16_t(0x0000));
+        QVERIFY(f.groupAddress);
+
+        prog.cancel();
+    }
+
+    void fullProgrammingSequenceSucceeds()
     {
         MockInterface iface;
         KnxApplicationProgram app = makeApp();
@@ -140,27 +220,32 @@ private slots:
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
 
-        // Inject a correct memory response when the verify step begins
+        // Inject a correct memory response when verify begins
         connect(&prog, &DeviceProgrammer::stepStarted,
                 [&](int step, const QString &) {
             if (step == DeviceProgrammer::StepVerifyParameters) {
-                QTimer::singleShot(50, [&]() {
-                    // Expected: paramBlock = [42, 0]
-                    iface.injectFrame(fakeMemoryResponse(
-                        QStringLiteral("1.1.1"), 0x4000,
-                        QByteArray::fromHex("2A00")));
+                // Correct param data: p1=42 (0x2A), padded to 2 bytes
+                QTimer::singleShot(20, [&]() {
+                    iface.injectMemoryResponse(QStringLiteral("1.1.1"), 0x4000,
+                                               QByteArray::fromHex("2A00"));
                 });
             }
         });
 
         QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
+
+        // Simulate one prog-mode device as the first cemi response
+        QTimer::singleShot(5, [&]() {
+            iface.injectProgModeResponse(QStringLiteral("1.1.1"));
+        });
+
         prog.start();
         QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 8000);
 
         QCOMPARE(doneSpy.at(0).at(0).toBool(), true);
 
-        // Must have sent: PA_Write + at least address/assoc/param memory writes
-        QVERIFY(iface.m_sent.size() >= 4);
+        // Must have sent IndividualAddressRead + IndividualAddressWrite + at least
+        // one Memory_Write (address/association/parameter tables)
         bool hasMemWrite = false;
         for (const QByteArray &raw : iface.m_sent) {
             const CemiFrame f = CemiFrame::fromBytes(raw);
@@ -172,7 +257,7 @@ private slots:
         QVERIFY(hasMemWrite);
     }
 
-    void verifyStepFailsOnMismatch()
+    void verifyFailsOnMismatch()
     {
         MockInterface iface;
         KnxApplicationProgram app = makeApp();
@@ -181,17 +266,19 @@ private slots:
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
 
-        // Inject a WRONG memory response during the verify step
         connect(&prog, &DeviceProgrammer::stepStarted,
                 [&](int step, const QString &) {
             if (step == DeviceProgrammer::StepVerifyParameters) {
-                QTimer::singleShot(50, [&]() {
-                    // Wrong data: device returns [0xFF, 0x00] but we wrote [42, 0]
-                    iface.injectFrame(fakeMemoryResponse(
-                        QStringLiteral("1.1.1"), 0x4000,
-                        QByteArray::fromHex("FF00")));
+                QTimer::singleShot(20, [&]() {
+                    // Wrong data: 0xFF instead of 0x2A
+                    iface.injectMemoryResponse(QStringLiteral("1.1.1"), 0x4000,
+                                               QByteArray::fromHex("FF00"));
                 });
             }
+        });
+
+        QTimer::singleShot(5, [&]() {
+            iface.injectProgModeResponse(QStringLiteral("1.1.1"));
         });
 
         QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
@@ -204,8 +291,7 @@ private slots:
 
     void verifyTimeoutIsNonFatal()
     {
-        // No memory response is ever injected → verify step times out → programming
-        // should still complete successfully (non-fatal warning)
+        // No memory response injected → verify times out → programming still succeeds
         MockInterface iface;
         KnxApplicationProgram app = makeApp();
         DeviceInstance dev        = makeDevice(app);
@@ -213,10 +299,13 @@ private slots:
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
 
+        QTimer::singleShot(5, [&]() {
+            iface.injectProgModeResponse(QStringLiteral("1.1.1"));
+        });
+
         QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
         prog.start();
-        // Must finish (with success, just no verify) within reasonable time
-        // Sequence: ~10 + 400×4steps + 2000 verify timeout + 100 + 1000 ≈ 5s
+        // ~10ms prog + 400ms PA settle + ~0ms transport steps + 2000ms verify timeout ≈ 2.5s
         QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 8000);
 
         QCOMPARE(doneSpy.at(0).at(0).toBool(), true);
@@ -229,7 +318,7 @@ private slots:
         DeviceInstance dev        = makeDevice(app);
 
         DeviceProgrammer prog(&iface, &dev, &app);
-        prog.setProgModeTimeout(500); // long enough to cancel before it fires
+        prog.setProgModeTimeout(5000);  // long — so it stays in WaitProgMode
 
         QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
         prog.start();
@@ -242,7 +331,7 @@ private slots:
 
     void chunksLargeParameterBlock()
     {
-        // 30-byte parameter block → needs ceil(30/12) = 3 write chunks
+        // 30-byte parameter block → ceil(30/12) = 3 Memory_Write chunks
         KnxApplicationProgram app = makeApp();
         app.parameters.clear();
         KnxParameterType t; t.id = QStringLiteral("uint8");
@@ -258,28 +347,60 @@ private slots:
         app.memoryLayout.parameterSize = 30;
 
         DeviceInstance dev = makeDevice(app);
-
         MockInterface iface;
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
 
+        QTimer::singleShot(5, [&]() {
+            iface.injectProgModeResponse(QStringLiteral("1.1.1"));
+        });
+
         QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
         prog.start();
-        // Let verify time out (non-fatal) — total ≈ 10 + 400×(1+1+3) + 2000 + 100 + 1000 ≈ 5s
+        // Verify times out (no injection) → non-fatal → finishes in ~2.5s
         QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 10000);
 
         QCOMPARE(doneSpy.at(0).at(0).toBool(), true);
 
-        // Count A_Memory_Write frames
+        // Count A_Memory_Write frames (APCI 0x280..0x2BF)
         int memWriteCount = 0;
         for (const QByteArray &raw : iface.m_sent) {
             const CemiFrame f = CemiFrame::fromBytes(raw);
             if (!f.groupAddress && (f.apci() & 0x3C0) == 0x280)
                 ++memWriteCount;
         }
-        // 3 parameter chunks + at least 1 address table + 1 association table chunk
+        // 3 param chunks + at least 1 addr table chunk + 1 assoc table chunk = ≥ 5
         QVERIFY2(memWriteCount >= 5,
-                 qPrintable(QStringLiteral("Expected ≥ 5 Memory_Writes, got %1").arg(memWriteCount)));
+                 qPrintable(QStringLiteral("Expected ≥ 5 Memory_Writes, got %1")
+                            .arg(memWriteCount)));
+    }
+
+    void noLoadStateMachineMode()
+    {
+        // When m_useLoadState=false, no PropertyValue_Write frames should appear
+        MockInterface iface;
+        KnxApplicationProgram app = makeApp();
+        DeviceInstance dev        = makeDevice(app);
+
+        DeviceProgrammer prog(&iface, &dev, &app);
+        prog.setProgModeTimeout(10);
+        prog.setLoadStateMachineEnabled(false);
+
+        QTimer::singleShot(5, [&]() {
+            iface.injectProgModeResponse(QStringLiteral("1.1.1"));
+        });
+
+        QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
+        prog.start();
+        QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 8000);
+        QCOMPARE(doneSpy.at(0).at(0).toBool(), true);
+
+        // No PropertyValue_Write frames (APCI 0x3D7)
+        for (const QByteArray &raw : iface.m_sent) {
+            const CemiFrame f = CemiFrame::fromBytes(raw);
+            QVERIFY2(f.apci() != 0x3D7,
+                     "PropertyValue_Write should not be sent in no-load-state mode");
+        }
     }
 };
 

@@ -18,6 +18,8 @@ public:
     // Assigns a project ID if none is set yet, then writes the .knxproj ZIP.
     static bool save(Project &project, const QString &filePath);
 
-    // Returns nullptr on failure.
-    static std::unique_ptr<Project> load(const QString &filePath);
+    // Returns nullptr on failure. If errorOut is given, fills it with a
+    // human-readable description of why the load failed.
+    static std::unique_ptr<Project> load(const QString &filePath,
+                                          QString *errorOut = nullptr);
 };
