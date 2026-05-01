@@ -10,6 +10,7 @@ class GroupAddress;
 class QTableWidget;
 class QPushButton;
 class QLabel;
+class QLineEdit;
 
 // Displays the current value of every group address in the project.
 // Listens for GroupValue_Response telegrams on the bus and refreshes
@@ -30,6 +31,7 @@ private slots:
     void onReadAllClicked();
     void onReadRowClicked(int row);
     void onSendRowClicked(int row);
+    void onFilterChanged(const QString &text);
 
 private:
     void rebuild();
@@ -44,6 +46,7 @@ private:
     QTableWidget *m_table     = nullptr;
     QPushButton  *m_readAll   = nullptr;
     QLabel       *m_status    = nullptr;
+    QLineEdit    *m_filter    = nullptr;
 
     // ga raw → row index
     QMap<uint16_t, int> m_gaRow;

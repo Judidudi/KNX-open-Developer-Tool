@@ -43,6 +43,7 @@ signals:
     void deleteAreaRequested(TopologyNode *area);
     void deleteLineRequested(TopologyNode *line);
     void deleteDeviceRequested(DeviceInstance *dev);
+    void duplicateDeviceRequested(DeviceInstance *dev, TopologyNode *line);
 
     // G1: Group address management
     void addMainGroupRequested();

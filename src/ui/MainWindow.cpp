@@ -245,6 +245,8 @@ void MainWindow::setupCentralWidget()
             this, &MainWindow::onDeleteLineRequested);
     connect(m_projectTree, &ProjectTreeWidget::deleteDeviceRequested,
             this, &MainWindow::onDeleteDeviceRequested);
+    connect(m_projectTree, &ProjectTreeWidget::duplicateDeviceRequested,
+            this, &MainWindow::onDuplicateDeviceRequested);
 
     // G1: Group address signals
     connect(m_projectTree, &ProjectTreeWidget::addMainGroupRequested,
@@ -871,6 +873,44 @@ void MainWindow::onDeleteDeviceRequested(DeviceInstance *dev)
             }
         }
     }
+}
+
+void MainWindow::onDuplicateDeviceRequested(DeviceInstance *src, TopologyNode *line)
+{
+    if (!src || !line) return;
+
+    // Build a clone: same product refs + app program, copy all parameters + com-object links
+    auto clone = std::make_unique<DeviceInstance>(
+        QString(),               // new unique id assigned by DeviceInstance constructor
+        src->productRefId(),
+        src->appProgramRefId());
+    clone->setAppProgram(src->appProgramShared());
+
+    // Deep-copy parameters and links
+    for (const auto &[id, val] : src->parameters())
+        clone->parameters()[id] = val;
+    for (const ComObjectLink &lnk : src->links())
+        clone->addLink(lnk);
+
+    // Increment physical address by 1 if it fits the range
+    clone->setDescription(src->description().isEmpty()
+                          ? tr("Kopie") : src->description() + tr(" (Kopie)"));
+    {
+        const QStringList parts = src->physicalAddress().split(QLatin1Char('.'));
+        if (parts.size() == 3) {
+            bool ok = false;
+            int sub = parts[2].toInt(&ok);
+            if (ok && sub < 255)
+                clone->setPhysicalAddress(
+                    QStringLiteral("%1.%2.%3").arg(parts[0]).arg(parts[1]).arg(sub + 1));
+            else
+                clone->setPhysicalAddress(src->physicalAddress());
+        }
+    }
+
+    line->addDevice(std::move(clone));
+    m_projectTree->refresh();
+    markModified();
 }
 
 // ─── G1: Group address management ─────────────────────────────────────────────

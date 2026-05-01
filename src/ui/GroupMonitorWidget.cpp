@@ -4,6 +4,7 @@
 #include "InterfaceManager.h"
 #include "IKnxInterface.h"
 #include "CemiFrame.h"
+#include "DptRegistry.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -117,6 +118,7 @@ GroupMonitorWidget::GroupMonitorWidget(QWidget *parent)
     , m_table(new QTableWidget(0, ColCount, this))
     , m_readAll(new QPushButton(tr("Alle lesen"), this))
     , m_status(new QLabel(this))
+    , m_filter(new QLineEdit(this))
 {
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(6, 6, 6, 6);
@@ -127,7 +129,9 @@ GroupMonitorWidget::GroupMonitorWidget(QWidget *parent)
 
     auto *toolbar = new QHBoxLayout;
     toolbar->addWidget(m_readAll);
-    toolbar->addStretch();
+    m_filter->setPlaceholderText(tr("Suchen (Adresse oder Name)…"));
+    m_filter->setClearButtonEnabled(true);
+    toolbar->addWidget(m_filter, 1);
     toolbar->addWidget(m_status);
     layout->addLayout(toolbar);
 
@@ -150,6 +154,7 @@ GroupMonitorWidget::GroupMonitorWidget(QWidget *parent)
     layout->addWidget(m_table);
 
     connect(m_readAll, &QPushButton::clicked, this, &GroupMonitorWidget::onReadAllClicked);
+    connect(m_filter, &QLineEdit::textChanged, this, &GroupMonitorWidget::onFilterChanged);
 }
 
 void GroupMonitorWidget::setProject(Project *project)
@@ -185,7 +190,12 @@ void GroupMonitorWidget::rebuild()
 
         m_table->setItem(r, ColGa,   new QTableWidgetItem(ga.toString()));
         m_table->setItem(r, ColName, new QTableWidgetItem(ga.name()));
-        m_table->setItem(r, ColDpt,  new QTableWidgetItem(ga.dpt()));
+
+        auto *dptItem = new QTableWidgetItem(ga.dpt());
+        if (const DptInfo *info = DptRegistry::instance().find(ga.dpt()))
+            dptItem->setToolTip(info->nameDe + QStringLiteral(" (") + info->name + QLatin1Char(')'));
+        m_table->setItem(r, ColDpt, dptItem);
+
         m_table->setItem(r, ColValue,new QTableWidgetItem(QStringLiteral("–")));
         m_table->setItem(r, ColTime, new QTableWidgetItem());
 
@@ -271,6 +281,20 @@ void GroupMonitorWidget::onSendRowClicked(int row)
 
     const QString dpt  = m_table->item(row, ColDpt) ? m_table->item(row, ColDpt)->text() : QString();
     sendWrite(gas[row].toRaw(), dpt, edit->text());
+}
+
+void GroupMonitorWidget::onFilterChanged(const QString &text)
+{
+    const QString lower = text.trimmed().toLower();
+    for (int r = 0; r < m_table->rowCount(); ++r) {
+        bool match = lower.isEmpty();
+        if (!match) {
+            const QString ga   = m_table->item(r, ColGa)   ? m_table->item(r, ColGa)->text().toLower()   : QString();
+            const QString name = m_table->item(r, ColName) ? m_table->item(r, ColName)->text().toLower() : QString();
+            match = ga.contains(lower) || name.contains(lower);
+        }
+        m_table->setRowHidden(r, !match);
+    }
 }
 
 void GroupMonitorWidget::onCemiReceived(const QByteArray &cemi)

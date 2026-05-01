@@ -64,6 +64,7 @@ private slots:
     void onDeleteAreaRequested(TopologyNode *area);
     void onDeleteLineRequested(TopologyNode *line);
     void onDeleteDeviceRequested(DeviceInstance *dev);
+    void onDuplicateDeviceRequested(DeviceInstance *dev, TopologyNode *line);
 
     // G1: Group address management
     void onAddMainGroupRequested();

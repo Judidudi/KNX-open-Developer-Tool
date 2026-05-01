@@ -226,7 +226,12 @@ void ProjectTreeWidget::onTopoContextMenu(const QPoint &pos)
             emit deleteLineRequested(tn);
         });
     } else if (kind == ProjectTreeModel::Device) {
-        auto *dev = m_model->deviceAt(idx);
+        auto *dev  = m_model->deviceAt(idx);
+        auto *line = m_model->topologyNodeAt(idx.parent());
+        menu.addAction(tr("Duplizieren"), this, [this, dev, line](){
+            emit duplicateDeviceRequested(dev, line);
+        });
+        menu.addSeparator();
         menu.addAction(tr("Umbenennen"), this, [this, idx](){
             m_topoView->edit(idx);
         });

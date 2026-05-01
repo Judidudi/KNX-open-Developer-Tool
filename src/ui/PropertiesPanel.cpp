@@ -7,6 +7,7 @@
 #include "InterfaceManager.h"
 #include "IKnxInterface.h"
 #include "CemiFrame.h"
+#include "DptRegistry.h"
 
 #include <QStackedWidget>
 #include <QFormLayout>
@@ -205,6 +206,10 @@ void PropertiesPanel::showGroupAddress(GroupAddress *ga)
     m_gaAddrLabel->setText(ga->toString());
     m_gaNameEdit->setText(ga->name());
     m_gaDptEdit->setText(ga->dpt());
+    if (const DptInfo *info = DptRegistry::instance().find(ga->dpt()))
+        m_gaDptEdit->setToolTip(info->nameDe + QStringLiteral(" (") + info->name + QLatin1Char(')'));
+    else
+        m_gaDptEdit->setToolTip({});
     m_updating = false;
     m_stack->setCurrentIndex(2);
 }
@@ -272,7 +277,12 @@ void PropertiesPanel::onGaDptEdited()
 {
     if (m_updating || !m_currentGa)
         return;
-    m_currentGa->setDpt(m_gaDptEdit->text().trimmed());
+    const QString dpt = m_gaDptEdit->text().trimmed();
+    m_currentGa->setDpt(dpt);
+    if (const DptInfo *info = DptRegistry::instance().find(dpt))
+        m_gaDptEdit->setToolTip(info->nameDe + QStringLiteral(" (") + info->name + QLatin1Char(')'));
+    else
+        m_gaDptEdit->setToolTip({});
     emit groupAddressModified();
 }
 

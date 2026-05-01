@@ -44,6 +44,7 @@ public:
     void setAppProgram(std::shared_ptr<KnxApplicationProgram> p) { m_appProgram = std::move(p); }
     KnxApplicationProgram       *appProgram()       { return m_appProgram.get(); }
     const KnxApplicationProgram *appProgram() const { return m_appProgram.get(); }
+    std::shared_ptr<KnxApplicationProgram> appProgramShared() const { return m_appProgram; }
 
 private:
     QString                                  m_id;
