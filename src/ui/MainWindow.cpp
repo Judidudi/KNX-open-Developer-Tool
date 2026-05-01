@@ -44,6 +44,8 @@
 #include <QStandardPaths>
 #include <QDir>
 #include <QFile>
+#include <QTextStream>
+#include <QFileInfo>
 #include <QSettings>
 #include <QFileInfo>
 #include <QCoreApplication>
@@ -66,6 +68,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_projectTree->setProject(m_project.get());
     m_projectTree->setCatalog(m_catalog.get());
     m_busMonitor->setInterfaceManager(m_interfaces.get());
+    m_busMonitor->setProject(m_project.get());
     m_groupMonitor->setInterfaceManager(m_interfaces.get());
     m_groupMonitor->setProject(m_project.get());
     m_propertiesPanel->setProject(m_project.get());
@@ -145,6 +148,8 @@ void MainWindow::setupMenuBar()
                                                this, &MainWindow::addGroupAddress);
     projectMenu->addAction(tr("Gruppenadressen aus CSV importieren…"),
                            this, &MainWindow::onImportGaCsv);
+    projectMenu->addAction(tr("Gruppenadressen als CSV exportieren…"),
+                           this, &MainWindow::onExportGaCsv);
 
     QMenu *busMenu = menuBar()->addMenu(tr("&Bus"));
     m_actConnect    = busMenu->addAction(tr("&Verbinden…"),     this, &MainWindow::onConnectClicked);
@@ -321,6 +326,7 @@ void MainWindow::newProject()
     m_undoStack->clear();
 
     m_projectTree->setProject(m_project.get());
+    m_busMonitor->setProject(m_project.get());
     m_groupMonitor->setProject(m_project.get());
     m_propertiesPanel->setProject(m_project.get());
     m_deviceEditor->clearDevice();
@@ -353,6 +359,7 @@ void MainWindow::openProject()
     m_undoStack->clear();
 
     m_projectTree->setProject(m_project.get());
+    m_busMonitor->setProject(m_project.get());
     m_groupMonitor->setProject(m_project.get());
     m_propertiesPanel->setProject(m_project.get());
     m_deviceEditor->clearDevice();
@@ -598,6 +605,42 @@ void MainWindow::onImportGaCsv()
         statusBar()->showMessage(tr("Alle %1 Adressen bereits vorhanden – nichts importiert.")
             .arg(imported.size()));
     }
+}
+
+void MainWindow::onExportGaCsv()
+{
+    if (!m_project || m_project->groupAddresses().isEmpty()) {
+        QMessageBox::information(this, tr("Export"),
+            tr("Das Projekt enthält keine Gruppenadressen."));
+        return;
+    }
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Gruppenadressen als CSV exportieren"), QString(),
+        tr("CSV-Dateien (*.csv);;Alle Dateien (*)"));
+    if (path.isEmpty()) return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, tr("Fehler"),
+            tr("Die Datei konnte nicht geschrieben werden:\n%1").arg(path));
+        return;
+    }
+
+    QTextStream ts(&f);
+    ts.setEncoding(QStringConverter::Utf8);
+    // ETS-compatible header
+    ts << "\"Name\";\"Adresse\";\"DPT\"\n";
+    for (const GroupAddress &ga : m_project->groupAddresses()) {
+        const auto esc = [](const QString &s) {
+            return QStringLiteral("\"") + QString(s).replace(QLatin1Char('"'), QStringLiteral("\"\"")) + QLatin1Char('"');
+        };
+        ts << esc(ga.name()) << ';' << esc(ga.toString()) << ';' << esc(ga.dpt()) << '\n';
+    }
+    f.close();
+
+    statusBar()->showMessage(tr("%1 Gruppenadresse(n) exportiert nach %2")
+        .arg(m_project->groupAddresses().size()).arg(QFileInfo(path).fileName()));
 }
 
 void MainWindow::addToRecentFiles(const QString &path)

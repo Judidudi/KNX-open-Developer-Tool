@@ -5,9 +5,14 @@
 #include <QByteArray>
 #include <QString>
 #include <QList>
+#include <QMap>
+
+class Project;
 
 // Table model for the bus monitor: each row is one observed CEMI telegram.
 // Columns: Time, Source, Destination, Type, Value, Raw bytes.
+// When a Project is set, GroupValue telegrams targeting a known GA are decoded
+// using the GA's DPT (DPT-aware value display).
 class BusMonitorModel : public QAbstractTableModel
 {
     Q_OBJECT
@@ -30,10 +35,12 @@ public:
         QString    type;
         QString    value;
         QString    raw;
+        bool       isGroupTelegram = false;
     };
 
     explicit BusMonitorModel(QObject *parent = nullptr);
 
+    void setProject(Project *project);
     void appendCemi(const QByteArray &cemi);
     void clear();
 
@@ -46,5 +53,8 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
 
 private:
-    QList<Entry> m_entries;
+    QString dptForGa(uint16_t raw) const;
+
+    QList<Entry>          m_entries;
+    QMap<uint16_t, QString> m_gaDptMap;   // raw GA address → DPT string
 };

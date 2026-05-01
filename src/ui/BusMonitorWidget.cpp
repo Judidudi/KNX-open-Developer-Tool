@@ -3,6 +3,7 @@
 #include "InterfaceManager.h"
 #include "IKnxInterface.h"
 #include "CemiFrame.h"
+#include "Project.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -14,7 +15,32 @@
 #include <QTableView>
 #include <QHeaderView>
 #include <QSortFilterProxyModel>
+#include <QCheckBox>
 #include <QMessageBox>
+
+// ─── Custom proxy to combine text filter + "only group telegrams" flag ────────
+class BusMonitorProxy : public QSortFilterProxyModel
+{
+public:
+    explicit BusMonitorProxy(QObject *parent = nullptr)
+        : QSortFilterProxyModel(parent) {}
+
+    void setOnlyGroups(bool b) { m_onlyGroups = b; invalidateFilter(); }
+
+protected:
+    bool filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const override
+    {
+        if (m_onlyGroups) {
+            const auto *src = sourceModel();
+            const QModelIndex typeIdx = src->index(sourceRow, BusMonitorModel::ColType, sourceParent);
+            if (!src->data(typeIdx).toString().startsWith(QLatin1String("GroupValue")))
+                return false;
+        }
+        return QSortFilterProxyModel::filterAcceptsRow(sourceRow, sourceParent);
+    }
+
+    bool m_onlyGroups = false;
+};
 #include <QtMath>
 #include <cmath>
 
@@ -94,11 +120,12 @@ QByteArray BusMonitorWidget::encodeValue(int dptIndex, const QString &text)
 BusMonitorWidget::BusMonitorWidget(QWidget *parent)
     : QWidget(parent)
     , m_model(new BusMonitorModel(this))
-    , m_proxy(new QSortFilterProxyModel(this))
+    , m_proxy(new BusMonitorProxy(this))
     , m_view(new QTableView(this))
     , m_startStop(new QPushButton(tr("Pause"), this))
     , m_clear(new QPushButton(tr("Leeren"), this))
     , m_filter(new QLineEdit(this))
+    , m_onlyGroups(new QCheckBox(tr("Nur Gruppen"), this))
     , m_counter(new QLabel(tr("0 Telegramme"), this))
     , m_sendGa(new QLineEdit(this))
     , m_sendDpt(new QComboBox(this))
@@ -118,7 +145,10 @@ BusMonitorWidget::BusMonitorWidget(QWidget *parent)
     toolbar->addWidget(m_startStop);
     toolbar->addWidget(m_clear);
     m_filter->setPlaceholderText(tr("Filter (Quelle/Ziel/Typ)…"));
+    m_filter->setClearButtonEnabled(true);
     toolbar->addWidget(m_filter, 1);
+    m_onlyGroups->setToolTip(tr("Nur Gruppenwert-Telegramme anzeigen"));
+    toolbar->addWidget(m_onlyGroups);
     toolbar->addWidget(m_counter);
     layout->addLayout(toolbar);
 
@@ -163,15 +193,21 @@ BusMonitorWidget::BusMonitorWidget(QWidget *parent)
     layout->addWidget(sendBox);
 
     // ── Signals ────────────────────────────────────────────────────────────────
-    connect(m_startStop, &QPushButton::clicked, this, &BusMonitorWidget::onStartStopClicked);
-    connect(m_clear,     &QPushButton::clicked, this, &BusMonitorWidget::onClearClicked);
-    connect(m_filter,    &QLineEdit::textChanged, this, &BusMonitorWidget::onFilterChanged);
-    connect(m_sendBtn,   &QPushButton::clicked, this, &BusMonitorWidget::onSendClicked);
-    connect(m_readBtn,   &QPushButton::clicked, this, &BusMonitorWidget::onReadClicked);
-    connect(m_sendValue, &QLineEdit::returnPressed, this, &BusMonitorWidget::onSendClicked);
+    connect(m_startStop,  &QPushButton::clicked,  this, &BusMonitorWidget::onStartStopClicked);
+    connect(m_clear,      &QPushButton::clicked,  this, &BusMonitorWidget::onClearClicked);
+    connect(m_filter,     &QLineEdit::textChanged,this, &BusMonitorWidget::onFilterChanged);
+    connect(m_onlyGroups, &QCheckBox::toggled,    this, &BusMonitorWidget::onOnlyGroupsToggled);
+    connect(m_sendBtn,    &QPushButton::clicked,  this, &BusMonitorWidget::onSendClicked);
+    connect(m_readBtn,    &QPushButton::clicked,  this, &BusMonitorWidget::onReadClicked);
+    connect(m_sendValue,  &QLineEdit::returnPressed, this, &BusMonitorWidget::onSendClicked);
 }
 
 // ─── Interface ────────────────────────────────────────────────────────────────
+
+void BusMonitorWidget::setProject(Project *project)
+{
+    m_model->setProject(project);
+}
 
 void BusMonitorWidget::setInterfaceManager(InterfaceManager *mgr)
 {
@@ -212,6 +248,11 @@ void BusMonitorWidget::onClearClicked()
 void BusMonitorWidget::onFilterChanged(const QString &text)
 {
     m_proxy->setFilterFixedString(text);
+}
+
+void BusMonitorWidget::onOnlyGroupsToggled(bool checked)
+{
+    m_proxy->setOnlyGroups(checked);
 }
 
 void BusMonitorWidget::onSendClicked()

@@ -53,6 +53,7 @@ private slots:
     void onShowGroupMonitor();
     void onImportCatalogFile();
     void onImportGaCsv();
+    void onExportGaCsv();
     void onOpenRecentFile(const QString &path);
     void onInterfaceConnected();
     void onInterfaceDisconnected();

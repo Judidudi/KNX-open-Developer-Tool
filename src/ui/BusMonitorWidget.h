@@ -5,13 +5,14 @@
 
 class BusMonitorModel;
 class InterfaceManager;
+class Project;
 
 class QTableView;
 class QPushButton;
 class QLineEdit;
 class QComboBox;
 class QLabel;
-class QSortFilterProxyModel;
+class QCheckBox;
 
 // Live telegram log with integrated group-telegram sender.
 // Subscribes to InterfaceManager::cemiFrameReceived and appends rows to an
@@ -25,27 +26,28 @@ public:
     explicit BusMonitorWidget(QWidget *parent = nullptr);
 
     void setInterfaceManager(InterfaceManager *mgr);
+    void setProject(Project *project);
 
 private slots:
     void onCemiReceived(const QByteArray &cemi);
     void onStartStopClicked();
     void onClearClicked();
     void onFilterChanged(const QString &text);
+    void onOnlyGroupsToggled(bool checked);
     void onSendClicked();
     void onReadClicked();
 
 private:
-    // Encode the user-supplied value string according to the selected DPT.
-    // Returns the raw payload bytes to pass to CemiFrame::buildGroupValueWrite.
     static QByteArray encodeValue(int dptIndex, const QString &text);
 
-    BusMonitorModel       *m_model     = nullptr;
-    QSortFilterProxyModel *m_proxy     = nullptr;
-    QTableView            *m_view      = nullptr;
-    QPushButton           *m_startStop = nullptr;
-    QPushButton           *m_clear     = nullptr;
-    QLineEdit             *m_filter    = nullptr;
-    QLabel                *m_counter   = nullptr;
+    BusMonitorModel *m_model = nullptr;
+    class BusMonitorProxy  *m_proxy = nullptr;
+    QTableView            *m_view       = nullptr;
+    QPushButton           *m_startStop  = nullptr;
+    QPushButton           *m_clear      = nullptr;
+    QLineEdit             *m_filter     = nullptr;
+    QCheckBox             *m_onlyGroups = nullptr;
+    QLabel                *m_counter    = nullptr;
 
     // Send panel
     QLineEdit   *m_sendGa    = nullptr;
