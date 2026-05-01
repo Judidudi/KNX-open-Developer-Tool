@@ -15,6 +15,10 @@ add_library(knxodt_ui STATIC
     BusMonitorWidget.cpp
     BusMonitorModel.h
     BusMonitorModel.cpp
+    GroupMonitorWidget.h
+    GroupMonitorWidget.cpp
+    UndoCommands.h
+    UndoCommands.cpp
     ProgramDialog.h
     ProgramDialog.cpp
     PropertiesPanel.h
@@ -25,6 +29,14 @@ add_library(knxodt_ui STATIC
     dialogs/ConnectDialog.cpp
     dialogs/GroupAddressDialog.h
     dialogs/GroupAddressDialog.cpp
+    dialogs/LineScanDialog.h
+    dialogs/LineScanDialog.cpp
+    dialogs/GaCsvImportDialog.h
+    dialogs/GaCsvImportDialog.cpp
+    dialogs/BatchProgramDialog.h
+    dialogs/BatchProgramDialog.cpp
+    dialogs/SettingsDialog.h
+    dialogs/SettingsDialog.cpp
 )
 
 target_include_directories(knxodt_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

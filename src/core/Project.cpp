@@ -2,6 +2,7 @@
 #include "TopologyNode.h"
 #include "DeviceInstance.h"
 #include "BuildingPart.h"
+#include <QtAlgorithms>
 
 Project::Project()
     : m_created(QDate::currentDate())
@@ -18,6 +19,21 @@ void Project::removeAreaAt(int index)
 {
     if (index >= 0 && index < static_cast<int>(m_areas.size()))
         m_areas.erase(m_areas.begin() + index);
+}
+
+std::unique_ptr<TopologyNode> Project::takeAreaAt(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_areas.size()))
+        return nullptr;
+    auto area = std::move(m_areas[index]);
+    m_areas.erase(m_areas.begin() + index);
+    return area;
+}
+
+void Project::insertAreaAt(int index, std::unique_ptr<TopologyNode> area)
+{
+    const int clamped = qBound(0, index, static_cast<int>(m_areas.size()));
+    m_areas.insert(m_areas.begin() + clamped, std::move(area));
 }
 
 TopologyNode *Project::areaAt(int index)

@@ -3,11 +3,17 @@
 #include "ProjectTreeWidget.h"
 #include "DeviceEditorWidget.h"
 #include "BusMonitorWidget.h"
+#include "GroupMonitorWidget.h"
+#include "UndoCommands.h"
 #include "ProgramDialog.h"
 #include "PropertiesPanel.h"
 #include "dialogs/NewProjectDialog.h"
 #include "dialogs/ConnectDialog.h"
 #include "dialogs/GroupAddressDialog.h"
+#include "dialogs/LineScanDialog.h"
+#include "dialogs/GaCsvImportDialog.h"
+#include "dialogs/BatchProgramDialog.h"
+#include "dialogs/SettingsDialog.h"
 
 #include "Project.h"
 #include "TopologyNode.h"
@@ -26,6 +32,7 @@
 #include <QMenuBar>
 #include <QToolBar>
 #include <QStatusBar>
+#include <QUndoStack>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QLabel>
@@ -39,8 +46,12 @@
 #include <QStandardPaths>
 #include <QDir>
 #include <QFile>
+#include <QTextStream>
+#include <QFileInfo>
+#include <QSettings>
 #include <QFileInfo>
 #include <QCoreApplication>
+#include <QTimer>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -48,6 +59,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_project    = std::make_unique<Project>();
     m_catalog    = std::make_unique<KnxprodCatalog>();
     m_interfaces = std::make_unique<InterfaceManager>();
+    m_undoStack  = new QUndoStack(this);
 
     setupCentralWidget();
     setupMenuBar();
@@ -59,6 +71,12 @@ MainWindow::MainWindow(QWidget *parent)
     m_projectTree->setProject(m_project.get());
     m_projectTree->setCatalog(m_catalog.get());
     m_busMonitor->setInterfaceManager(m_interfaces.get());
+    m_busMonitor->setProject(m_project.get());
+    m_groupMonitor->setInterfaceManager(m_interfaces.get());
+    m_groupMonitor->setProject(m_project.get());
+    m_propertiesPanel->setProject(m_project.get());
+    m_propertiesPanel->setInterfaceManager(m_interfaces.get());
+    m_deviceEditor->setInterfaceManager(m_interfaces.get());
 
     connect(m_interfaces.get(), &InterfaceManager::connected,
             this, &MainWindow::onInterfaceConnected);
@@ -70,6 +88,16 @@ MainWindow::MainWindow(QWidget *parent)
     updateConnectionUi();
     updateWindowTitle();
     resize(1280, 800);
+
+    // Startup actions based on saved settings (deferred to after window is shown)
+    QTimer::singleShot(0, this, [this]() {
+        const QSettings s;
+        if (s.value(QStringLiteral("project/openLastOnStart"), false).toBool()) {
+            const QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
+            if (!recent.isEmpty() && QFile::exists(recent.first()))
+                onOpenRecentFile(recent.first());
+        }
+    });
 }
 
 MainWindow::~MainWindow() = default;
@@ -77,8 +105,8 @@ MainWindow::~MainWindow() = default;
 void MainWindow::loadCatalog()
 {
     const QDir appDir(QCoreApplication::applicationDirPath());
-    const QString userPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
-                             + QStringLiteral("/catalog/devices");
+    m_writableCatalogPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
+                            + QStringLiteral("/catalog/devices");
 
     QStringList searchPaths;
     const QString envPath = qEnvironmentVariable("KNXODT_CATALOG_PATH");
@@ -87,7 +115,7 @@ void MainWindow::loadCatalog()
     searchPaths << appDir.absoluteFilePath(QStringLiteral("catalog/devices"))
                 << appDir.absoluteFilePath(QStringLiteral("../catalog/devices"))
                 << appDir.absoluteFilePath(QStringLiteral("../../catalog/devices"))
-                << userPath;
+                << m_writableCatalogPath;
 
     for (const QString &path : searchPaths) {
         QDir().mkpath(path);
@@ -116,18 +144,42 @@ void MainWindow::setupMenuBar()
     m_actSaveAs->setShortcut(QKeySequence::SaveAs);
 
     fileMenu->addSeparator();
+    m_recentMenu = fileMenu->addMenu(tr("Zuletzt geöffnet"));
+    updateRecentFilesMenu();
+    fileMenu->addSeparator();
+    fileMenu->addAction(tr("Katalogdatei &importieren…"), this, &MainWindow::onImportCatalogFile);
+    fileMenu->addSeparator();
     fileMenu->addAction(tr("&Beenden"), qApp, &QApplication::quit, QKeySequence::Quit);
+
+    QMenu *editMenu = menuBar()->addMenu(tr("&Bearbeiten"));
+    editMenu->addAction(m_undoStack->createUndoAction(this, tr("&Rückgängig")));
+    editMenu->addAction(m_undoStack->createRedoAction(this, tr("&Wiederholen")));
+    editMenu->actions().at(0)->setShortcut(QKeySequence::Undo);
+    editMenu->actions().at(1)->setShortcut(QKeySequence::Redo);
 
     QMenu *projectMenu = menuBar()->addMenu(tr("&Projekt"));
     m_actAddGroupAddr = projectMenu->addAction(tr("Gruppenadresse hinzufügen…"),
                                                this, &MainWindow::addGroupAddress);
+    projectMenu->addAction(tr("Gruppenadressen aus CSV importieren…"),
+                           this, &MainWindow::onImportGaCsv);
+    projectMenu->addAction(tr("Gruppenadressen als CSV exportieren…"),
+                           this, &MainWindow::onExportGaCsv);
 
     QMenu *busMenu = menuBar()->addMenu(tr("&Bus"));
     m_actConnect    = busMenu->addAction(tr("&Verbinden…"),     this, &MainWindow::onConnectClicked);
     m_actDisconnect = busMenu->addAction(tr("&Trennen"),         this, &MainWindow::onDisconnectClicked);
-    m_actBusMonitor = busMenu->addAction(tr("&Busmonitor"),      this, &MainWindow::onShowBusMonitor);
+    m_actBusMonitor   = busMenu->addAction(tr("&Busmonitor"),          this, &MainWindow::onShowBusMonitor);
+    m_actGroupMonitor = busMenu->addAction(tr("&Gruppenadress-Monitor"), this, &MainWindow::onShowGroupMonitor);
     busMenu->addSeparator();
-    m_actProgram    = busMenu->addAction(tr("Gerät &programmieren…"), this, &MainWindow::onProgramClicked);
+    m_actLineScan     = busMenu->addAction(tr("&Leitungsscan…"),        this, &MainWindow::onLineScanClicked);
+    busMenu->addSeparator();
+    m_actProgram      = busMenu->addAction(tr("Gerät &programmieren…"), this, &MainWindow::onProgramClicked);
+
+    QMenu *extrasMenu = menuBar()->addMenu(tr("&Extras"));
+    extrasMenu->addAction(tr("&Einstellungen…"), this, [this](){
+        SettingsDialog dlg(this);
+        dlg.exec();
+    });
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Hilfe"));
     helpMenu->addAction(tr("Über KNX open Developer Tool…"), this, [this](){
@@ -162,10 +214,12 @@ void MainWindow::setupCentralWidget()
     m_projectTree  = new ProjectTreeWidget(this);
     m_deviceEditor = new DeviceEditorWidget(this);
     m_busMonitor   = new BusMonitorWidget(this);
+    m_groupMonitor = new GroupMonitorWidget(this);
 
     m_centerStack = new QStackedWidget(this);
     m_centerStack->addWidget(m_deviceEditor);
     m_centerStack->addWidget(m_busMonitor);
+    m_centerStack->addWidget(m_groupMonitor);
     m_centerStack->setCurrentWidget(m_deviceEditor);
 
     auto *splitter = new QSplitter(Qt::Horizontal, this);
@@ -216,6 +270,8 @@ void MainWindow::setupCentralWidget()
             this, &MainWindow::onDeleteLineRequested);
     connect(m_projectTree, &ProjectTreeWidget::deleteDeviceRequested,
             this, &MainWindow::onDeleteDeviceRequested);
+    connect(m_projectTree, &ProjectTreeWidget::duplicateDeviceRequested,
+            this, &MainWindow::onDuplicateDeviceRequested);
 
     // G1: Group address signals
     connect(m_projectTree, &ProjectTreeWidget::addMainGroupRequested,
@@ -226,6 +282,10 @@ void MainWindow::setupCentralWidget()
             this, &MainWindow::onAddGroupAddressRequested);
     connect(m_projectTree, &ProjectTreeWidget::deleteGroupAddressRequested,
             this, &MainWindow::onDeleteGroupAddressRequested);
+
+    // Catalog import
+    connect(m_projectTree, &ProjectTreeWidget::catalogImportRequested,
+            this, &MainWindow::onImportCatalogFile);
 
     // G2: Building signals
     connect(m_projectTree, &ProjectTreeWidget::addBuildingRequested,
@@ -283,8 +343,12 @@ void MainWindow::newProject()
 
     m_currentFilePath.clear();
     m_modified = false;
+    m_undoStack->clear();
 
     m_projectTree->setProject(m_project.get());
+    m_busMonitor->setProject(m_project.get());
+    m_groupMonitor->setProject(m_project.get());
+    m_propertiesPanel->setProject(m_project.get());
     m_deviceEditor->clearDevice();
     m_propertiesPanel->clearSelection();
     updateWindowTitle();
@@ -312,10 +376,15 @@ void MainWindow::openProject()
     m_project = std::move(loaded);
     m_currentFilePath = path;
     m_modified = false;
+    m_undoStack->clear();
 
     m_projectTree->setProject(m_project.get());
+    m_busMonitor->setProject(m_project.get());
+    m_groupMonitor->setProject(m_project.get());
+    m_propertiesPanel->setProject(m_project.get());
     m_deviceEditor->clearDevice();
     m_propertiesPanel->clearSelection();
+    addToRecentFiles(path);
     updateWindowTitle();
     statusBar()->showMessage(tr("Projekt geladen: %1").arg(path));
 }
@@ -332,6 +401,7 @@ void MainWindow::saveProject()
         return;
     }
     m_modified = false;
+    addToRecentFiles(m_currentFilePath);
     updateWindowTitle();
     statusBar()->showMessage(tr("Gespeichert: %1").arg(m_currentFilePath));
 }
@@ -360,8 +430,9 @@ void MainWindow::addGroupAddress()
             tr("Die Adresse %1 ist im Projekt bereits vorhanden.").arg(ga.toString()));
         return;
     }
-    m_project->addGroupAddress(ga);
+    m_undoStack->push(new AddGroupAddressCommand(m_project.get(), ga));
     m_projectTree->refresh();
+    refreshGroupMonitor();
     markModified();
 }
 
@@ -476,35 +547,245 @@ void MainWindow::onShowBusMonitor()
     m_centerStack->setCurrentWidget(m_busMonitor);
 }
 
-void MainWindow::onProgramClicked()
+void MainWindow::onShowGroupMonitor()
 {
-    if (!m_selectedDevice) {
-        QMessageBox::information(this, tr("Kein Gerät ausgewählt"),
-            tr("Bitte wählen Sie im Projekt-Browser ein Gerät aus."));
+    m_centerStack->setCurrentWidget(m_groupMonitor);
+}
+
+void MainWindow::refreshGroupMonitor()
+{
+    if (m_groupMonitor && m_project)
+        m_groupMonitor->setProject(m_project.get());
+}
+
+void MainWindow::onImportCatalogFile()
+{
+    const QString src = QFileDialog::getOpenFileName(
+        this, tr("Katalogdatei importieren"), QString(),
+        tr("KNX Produktdateien (*.knxprod);;Alle Dateien (*)"));
+    if (src.isEmpty())
+        return;
+
+    QDir().mkpath(m_writableCatalogPath);
+    const QString dst = m_writableCatalogPath + QStringLiteral("/")
+                        + QFileInfo(src).fileName();
+
+    if (QFile::exists(dst)) {
+        const auto btn = QMessageBox::question(this, tr("Datei bereits vorhanden"),
+            tr("Die Datei \"%1\" ist bereits im Katalog vorhanden. Überschreiben?")
+                .arg(QFileInfo(dst).fileName()),
+            QMessageBox::Yes | QMessageBox::Cancel);
+        if (btn != QMessageBox::Yes)
+            return;
+        QFile::remove(dst);
+    }
+
+    if (!QFile::copy(src, dst)) {
+        QMessageBox::critical(this, tr("Fehler"),
+            tr("Die Datei konnte nicht kopiert werden:\n%1").arg(src));
         return;
     }
+
+    m_catalog->reload();
+    m_projectTree->setCatalog(m_catalog.get());
+    const int count = m_catalog->count();
+    statusBar()->showMessage(tr("Katalog geladen: %1 Produkt(e)").arg(count));
+}
+
+void MainWindow::onImportGaCsv()
+{
+    if (!m_project) return;
+
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Gruppenadressen aus CSV importieren"), QString(),
+        tr("CSV-Dateien (*.csv);;Alle Dateien (*)"));
+    if (path.isEmpty()) return;
+
+    GaCsvImportDialog dlg(path, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const QList<GroupAddress> &imported = dlg.addresses();
+    if (imported.isEmpty()) return;
+
+    int added = 0;
+    for (const GroupAddress &ga : imported) {
+        if (!m_project->findGroupAddress(ga.toString())) {
+            m_project->addGroupAddress(ga);
+            ++added;
+        }
+    }
+
+    if (added > 0) {
+        m_projectTree->refresh();
+        refreshGroupMonitor();
+        markModified();
+        statusBar()->showMessage(tr("%1 Gruppenadresse(n) importiert (%2 übersprungen)")
+            .arg(added).arg(imported.size() - added));
+    } else {
+        statusBar()->showMessage(tr("Alle %1 Adressen bereits vorhanden – nichts importiert.")
+            .arg(imported.size()));
+    }
+}
+
+void MainWindow::onExportGaCsv()
+{
+    if (!m_project || m_project->groupAddresses().isEmpty()) {
+        QMessageBox::information(this, tr("Export"),
+            tr("Das Projekt enthält keine Gruppenadressen."));
+        return;
+    }
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Gruppenadressen als CSV exportieren"), QString(),
+        tr("CSV-Dateien (*.csv);;Alle Dateien (*)"));
+    if (path.isEmpty()) return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, tr("Fehler"),
+            tr("Die Datei konnte nicht geschrieben werden:\n%1").arg(path));
+        return;
+    }
+
+    QTextStream ts(&f);
+    ts.setEncoding(QStringConverter::Utf8);
+    // ETS-compatible header
+    ts << "\"Name\";\"Adresse\";\"DPT\"\n";
+    for (const GroupAddress &ga : m_project->groupAddresses()) {
+        const auto esc = [](const QString &s) {
+            return QStringLiteral("\"") + QString(s).replace(QLatin1Char('"'), QStringLiteral("\"\"")) + QLatin1Char('"');
+        };
+        ts << esc(ga.name()) << ';' << esc(ga.toString()) << ';' << esc(ga.dpt()) << '\n';
+    }
+    f.close();
+
+    statusBar()->showMessage(tr("%1 Gruppenadresse(n) exportiert nach %2")
+        .arg(m_project->groupAddresses().size()).arg(QFileInfo(path).fileName()));
+}
+
+void MainWindow::addToRecentFiles(const QString &path)
+{
+    if (path.isEmpty()) return;
+    QSettings s;
+    QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
+    recent.removeAll(path);
+    recent.prepend(path);
+    while (recent.size() > 8)
+        recent.removeLast();
+    s.setValue(QStringLiteral("recentFiles"), recent);
+    updateRecentFilesMenu();
+}
+
+void MainWindow::updateRecentFilesMenu()
+{
+    if (!m_recentMenu) return;
+    m_recentMenu->clear();
+    const QStringList recent = QSettings().value(QStringLiteral("recentFiles")).toStringList();
+    if (recent.isEmpty()) {
+        m_recentMenu->addAction(tr("(Keine)"))->setEnabled(false);
+        return;
+    }
+    for (const QString &path : recent) {
+        const QString label = QFileInfo(path).fileName()
+                              + QStringLiteral("  [") + QFileInfo(path).dir().dirName() + QLatin1Char(']');
+        m_recentMenu->addAction(label, this, [this, path](){ onOpenRecentFile(path); });
+    }
+    m_recentMenu->addSeparator();
+    m_recentMenu->addAction(tr("Liste leeren"), this, [this](){
+        QSettings().remove(QStringLiteral("recentFiles"));
+        updateRecentFilesMenu();
+    });
+}
+
+void MainWindow::onOpenRecentFile(const QString &path)
+{
+    if (!QFile::exists(path)) {
+        QMessageBox::warning(this, tr("Datei nicht gefunden"),
+            tr("Die Datei wurde nicht gefunden:\n%1").arg(path));
+        // Remove from recent list
+        QSettings s;
+        QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
+        recent.removeAll(path);
+        s.setValue(QStringLiteral("recentFiles"), recent);
+        updateRecentFilesMenu();
+        return;
+    }
+    if (!maybeSave()) return;
+
+    auto loaded = KnxprojSerializer::load(path);
+    if (!loaded) {
+        QMessageBox::critical(this, tr("Fehler"),
+            tr("Projekt konnte nicht geöffnet werden:\n%1").arg(path));
+        return;
+    }
+
+    m_project = std::move(loaded);
+    m_currentFilePath = path;
+    m_modified = false;
+    m_undoStack->clear();
+
+    m_projectTree->setProject(m_project.get());
+    m_groupMonitor->setProject(m_project.get());
+    m_propertiesPanel->setProject(m_project.get());
+    m_deviceEditor->clearDevice();
+    m_propertiesPanel->clearSelection();
+    addToRecentFiles(path);
+    updateWindowTitle();
+    statusBar()->showMessage(tr("Projekt geladen: %1").arg(path));
+}
+
+void MainWindow::onLineScanClicked()
+{
     if (!m_interfaces->isConnected()) {
         QMessageBox::warning(this, tr("Nicht verbunden"),
             tr("Bitte zuerst mit einem Bus-Interface verbinden."));
         return;
     }
-    if (!m_selectedDevice->appProgram())
-        m_selectedDevice->setAppProgram(m_catalog->sharedByProductRef(m_selectedDevice->productRefId()));
-    if (!m_selectedDevice->appProgram()) {
-        QMessageBox::critical(this, tr("Anwendungsprogramm fehlt"),
-            tr("Für das Gerät %1 wurde kein Anwendungsprogramm gefunden.").arg(m_selectedDevice->productRefId()));
+    LineScanDialog dlg(m_interfaces.get(), this);
+    dlg.exec();
+}
+
+void MainWindow::onProgramClicked()
+{
+    if (!m_interfaces->isConnected()) {
+        QMessageBox::warning(this, tr("Nicht verbunden"),
+            tr("Bitte zuerst mit einem Bus-Interface verbinden."));
         return;
     }
 
-    auto *programmer = new DeviceProgrammer(
-        m_interfaces->activeInterface(),
-        m_selectedDevice,
-        m_selectedDevice->appProgram(),
-        this);
+    // Collect all selected devices from the topology view
+    QList<DeviceInstance *> selected = m_projectTree->selectedDevices();
 
-    auto *dlg = new ProgramDialog(programmer, this);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->show();
+    // If nothing multi-selected but a single device is active, use that
+    if (selected.isEmpty() && m_selectedDevice)
+        selected.append(m_selectedDevice);
+
+    if (selected.isEmpty()) {
+        QMessageBox::information(this, tr("Kein Gerät ausgewählt"),
+            tr("Bitte wählen Sie im Projekt-Browser ein oder mehrere Geräte aus."));
+        return;
+    }
+
+    if (selected.size() == 1) {
+        DeviceInstance *dev = selected.first();
+        if (!dev->appProgram())
+            dev->setAppProgram(m_catalog->sharedByProductRef(dev->productRefId()));
+        if (!dev->appProgram()) {
+            QMessageBox::critical(this, tr("Anwendungsprogramm fehlt"),
+                tr("Für das Gerät %1 wurde kein Anwendungsprogramm gefunden.").arg(dev->productRefId()));
+            return;
+        }
+        auto *programmer = new DeviceProgrammer(
+            m_interfaces->activeInterface(), dev, dev->appProgram(), this);
+        auto *dlg = new ProgramDialog(programmer, this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->show();
+    } else {
+        auto *dlg = new BatchProgramDialog(
+            selected, m_interfaces->activeInterface(), m_catalog.get(), this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->show();
+    }
 }
 
 void MainWindow::onInterfaceConnected()
@@ -530,6 +811,7 @@ void MainWindow::updateConnectionUi()
     const bool connected = m_interfaces && m_interfaces->isConnected();
     if (m_actConnect)    m_actConnect->setEnabled(!connected);
     if (m_actDisconnect) m_actDisconnect->setEnabled(connected);
+    if (m_actLineScan)   m_actLineScan->setEnabled(connected);
     if (m_actProgram)    m_actProgram->setEnabled(connected && m_selectedDevice != nullptr);
 
     if (m_connectionStatusLabel) {
@@ -609,18 +891,17 @@ void MainWindow::onDeleteAreaRequested(TopologyNode *area)
 
     for (int i = 0; i < m_project->areaCount(); ++i) {
         if (m_project->areaAt(i) == area) {
-            m_project->removeAreaAt(i);
-            break;
+            if (m_selectedDevice) {
+                m_selectedDevice = nullptr;
+                m_deviceEditor->clearDevice();
+                m_propertiesPanel->clearSelection();
+            }
+            m_undoStack->push(new DeleteAreaCommand(m_project.get(), i));
+            m_projectTree->refresh();
+            markModified();
+            return;
         }
     }
-
-    if (m_selectedDevice) {
-        m_selectedDevice = nullptr;
-        m_deviceEditor->clearDevice();
-        m_propertiesPanel->clearSelection();
-    }
-    m_projectTree->refresh();
-    markModified();
 }
 
 void MainWindow::onDeleteLineRequested(TopologyNode *line)
@@ -633,41 +914,78 @@ void MainWindow::onDeleteLineRequested(TopologyNode *line)
 
     TopologyNode *area = line->parent();
     const int idx = area->indexOfChild(line);
-    if (idx >= 0)
-        area->removeChildAt(idx);
-
-    if (m_selectedDevice) {
-        m_selectedDevice = nullptr;
-        m_deviceEditor->clearDevice();
-        m_propertiesPanel->clearSelection();
+    if (idx >= 0) {
+        if (m_selectedDevice) {
+            m_selectedDevice = nullptr;
+            m_deviceEditor->clearDevice();
+            m_propertiesPanel->clearSelection();
+        }
+        m_undoStack->push(new DeleteLineCommand(area, idx));
+        m_projectTree->refresh();
+        markModified();
     }
-    m_projectTree->refresh();
-    markModified();
 }
 
 void MainWindow::onDeleteDeviceRequested(DeviceInstance *dev)
 {
     if (!dev) return;
 
-    // Find which line owns this device
     for (int a = 0; a < m_project->areaCount(); ++a) {
         TopologyNode *area = m_project->areaAt(a);
         for (int l = 0; l < area->childCount(); ++l) {
             TopologyNode *line = area->childAt(l);
             const int idx = line->indexOfDevice(dev);
             if (idx >= 0) {
-                line->removeDeviceAt(idx);
                 if (m_selectedDevice == dev) {
                     m_selectedDevice = nullptr;
                     m_deviceEditor->clearDevice();
                     m_propertiesPanel->clearSelection();
                 }
+                m_undoStack->push(new DeleteDeviceCommand(line, idx));
                 m_projectTree->refresh();
                 markModified();
                 return;
             }
         }
     }
+}
+
+void MainWindow::onDuplicateDeviceRequested(DeviceInstance *src, TopologyNode *line)
+{
+    if (!src || !line) return;
+
+    // Build a clone: same product refs + app program, copy all parameters + com-object links
+    auto clone = std::make_unique<DeviceInstance>(
+        QString(),               // new unique id assigned by DeviceInstance constructor
+        src->productRefId(),
+        src->appProgramRefId());
+    clone->setAppProgram(src->appProgramShared());
+
+    // Deep-copy parameters and links
+    for (const auto &[id, val] : src->parameters())
+        clone->parameters()[id] = val;
+    for (const ComObjectLink &lnk : src->links())
+        clone->addLink(lnk);
+
+    // Increment physical address by 1 if it fits the range
+    clone->setDescription(src->description().isEmpty()
+                          ? tr("Kopie") : src->description() + tr(" (Kopie)"));
+    {
+        const QStringList parts = src->physicalAddress().split(QLatin1Char('.'));
+        if (parts.size() == 3) {
+            bool ok = false;
+            int sub = parts[2].toInt(&ok);
+            if (ok && sub < 255)
+                clone->setPhysicalAddress(
+                    QStringLiteral("%1.%2.%3").arg(parts[0]).arg(parts[1]).arg(sub + 1));
+            else
+                clone->setPhysicalAddress(src->physicalAddress());
+        }
+    }
+
+    line->addDevice(std::move(clone));
+    m_projectTree->refresh();
+    markModified();
 }
 
 // ─── G1: Group address management ─────────────────────────────────────────────
@@ -742,8 +1060,11 @@ void MainWindow::onDeleteGroupAddressRequested(GroupAddress *ga)
         QMessageBox::Yes | QMessageBox::Cancel);
     if (btn != QMessageBox::Yes) return;
 
-    m_project->removeGroupAddress(ga->toString());
+    const int idx = m_project->groupAddresses().indexOf(*ga);
+    if (idx >= 0)
+        m_undoStack->push(new DeleteGroupAddressCommand(m_project.get(), idx));
     m_projectTree->refresh();
+    refreshGroupMonitor();
     markModified();
 }
 

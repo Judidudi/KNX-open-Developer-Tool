@@ -6,27 +6,46 @@ on:
   pull_request:
     branches: ["main"]
 
+env:
+  LINUXDEPLOY_VERSION: "1-alpha-20240109-1"
+  LINUXDEPLOY_QT_VERSION: "continuous"
+  QT_VERSION: "6.7.3"
+
 jobs:
+  # ─── Linux ──────────────────────────────────────────────────────────────────
   build-linux:
     name: Linux (Ubuntu 24.04, Qt6)
     runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Qt6 and build tools
         run: |
           sudo apt-get update -q
           sudo apt-get install -y \
-            cmake ninja-build g++ \
+            cmake ninja-build g++ ccache \
             qt6-base-dev qt6-tools-dev qt6-tools-dev-tools \
             qt6-l10n-tools \
             libqt6serialport6-dev \
             libgl1-mesa-dev \
             libfuse2
 
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-
+
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build build --parallel
@@ -38,18 +57,25 @@ jobs:
         run: |
           DESTDIR=${{ github.workspace }}/AppDir cmake --install build
 
+      - name: Determine version
+        id: version
+        run: |
+          VER=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "AppImage version: ${VER}"
+
       - name: Download linuxdeploy
         run: |
           curl -Lo linuxdeploy.AppImage \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${{ env.LINUXDEPLOY_VERSION }}/linuxdeploy-x86_64.AppImage"
           curl -Lo linuxdeploy-plugin-qt.AppImage \
-            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+            "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/${{ env.LINUXDEPLOY_QT_VERSION }}/linuxdeploy-plugin-qt-x86_64.AppImage"
           chmod +x linuxdeploy.AppImage linuxdeploy-plugin-qt.AppImage
 
       - name: Create AppImage
         env:
           QMAKE: /usr/bin/qmake6
-          OUTPUT: KNXOpenDeveloperTool-x86_64.AppImage
+          OUTPUT: KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-x86_64.AppImage
         run: |
           ./linuxdeploy.AppImage \
             --appdir ${{ github.workspace }}/AppDir \
@@ -62,6 +88,123 @@ jobs:
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: KNXOpenDeveloperTool-linux-x86_64
-          path: KNXOpenDeveloperTool-x86_64.AppImage
+          name: KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-linux-x86_64
+          path: KNXOpenDeveloperTool-*-x86_64.AppImage
+          retention-days: 30
+
+  # ─── Windows ────────────────────────────────────────────────────────────────
+  build-windows:
+    name: Windows (Qt ${{ env.QT_VERSION }}, MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Qt via aqtinstall
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: "qtserialport"
+          cache: true
+
+      - name: Cache MSVC compiler output
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/Microsoft/VisualStudio
+          key: msvc-${{ github.sha }}
+          restore-keys: msvc-
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          VER=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Qt dependencies
+        shell: cmd
+        run: |
+          mkdir deploy
+          copy build\app\KNXOpenDeveloperTool.exe deploy\
+          windeployqt --release --no-translations deploy\KNXOpenDeveloperTool.exe
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path deploy\* `
+            -DestinationPath "KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-windows-x64.zip"
+
+      - name: Upload Windows ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-windows-x64
+          path: KNXOpenDeveloperTool-*-windows-x64.zip
+          retention-days: 30
+
+  # ─── macOS ──────────────────────────────────────────────────────────────────
+  build-macos:
+    name: macOS (Qt ${{ env.QT_VERSION }}, Apple Silicon)
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Qt via aqtinstall
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: "qtserialport"
+          cache: true
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="${Qt6_DIR}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Determine version
+        id: version
+        run: |
+          VER=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Create macOS app bundle
+        run: |
+          macdeployqt build/app/KNXOpenDeveloperTool.app -dmg
+          mv build/app/KNXOpenDeveloperTool.dmg \
+             "KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-macos.dmg"
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: KNXOpenDeveloperTool-${{ steps.version.outputs.version }}-macos
+          path: KNXOpenDeveloperTool-*-macos.dmg
           retention-days: 30

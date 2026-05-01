@@ -13,6 +13,7 @@
 #include <QUuid>
 #include <QDate>
 #include <QMap>
+#include <QLoggingCategory>
 
 static constexpr const char *kNs = "http://knx.org/xml/project/21";
 
@@ -258,9 +259,19 @@ bool KnxprojSerializer::save(Project &project, const QString &filePath)
     const QByteArray zip = ZipUtils::buildZip(entries);
 
     QFile f(filePath);
-    if (!f.open(QIODevice::WriteOnly))
+    if (!f.open(QIODevice::WriteOnly)) {
+        qWarning() << "KnxprojSerializer: cannot open" << filePath << "for writing:" << f.errorString();
         return false;
-    return f.write(zip) == zip.size();
+    }
+    if (f.write(zip) != zip.size()) {
+        qWarning() << "KnxprojSerializer: short write to" << filePath;
+        return false;
+    }
+    qDebug() << "KnxprojSerializer: saved" << filePath
+             << "(" << zip.size() << "bytes,"
+             << project.areaCount() << "area(s),"
+             << project.groupAddresses().size() << "GA(s))";
+    return true;
 }
 
 // ─── Load ────────────────────────────────────────────────────────────────────
@@ -268,13 +279,17 @@ bool KnxprojSerializer::save(Project &project, const QString &filePath)
 std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
 {
     const auto entries = ZipUtils::readEntries(filePath);
-    if (entries.isEmpty())
+    if (entries.isEmpty()) {
+        qWarning() << "KnxprojSerializer: cannot read ZIP from" << filePath;
         return nullptr;
+    }
 
     // 1. Read project ID from root 0.xml
     const QByteArray rootXml = entries.value(QStringLiteral("0.xml"));
-    if (rootXml.isEmpty())
+    if (rootXml.isEmpty()) {
+        qWarning() << "KnxprojSerializer: no 0.xml found in" << filePath;
         return nullptr;
+    }
 
     QString projectId;
     QString projName;
@@ -293,13 +308,17 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
             }
         }
     }
-    if (projectId.isEmpty())
+    if (projectId.isEmpty()) {
+        qWarning() << "KnxprojSerializer: no Project/@Id found in 0.xml of" << filePath;
         return nullptr;
+    }
 
     // 2. Read main project XML
     const QByteArray projXml = entries.value(QStringLiteral("P-%1/0.xml").arg(projectId));
-    if (projXml.isEmpty())
+    if (projXml.isEmpty()) {
+        qWarning() << "KnxprojSerializer: missing P-" << projectId << "/0.xml in" << filePath;
         return nullptr;
+    }
 
     auto project = std::make_unique<Project>();
     project->setKnxprojId(projectId);
@@ -474,5 +493,8 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
         }
     }
 
+    qDebug() << "KnxprojSerializer: loaded" << filePath
+             << "–" << project->areaCount() << "area(s),"
+             << project->groupAddresses().size() << "GA(s)";
     return project;
 }

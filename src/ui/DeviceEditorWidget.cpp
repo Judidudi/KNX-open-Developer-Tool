@@ -5,14 +5,19 @@
 #include "KnxApplicationProgram.h"
 #include "GroupAddress.h"
 #include "ComObjectLink.h"
+#include "InterfaceManager.h"
+#include "IKnxInterface.h"
+#include "CemiFrame.h"
 
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QFormLayout>
 #include <QLabel>
 #include <QTabWidget>
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QComboBox>
+#include <QPushButton>
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QScrollArea>
@@ -37,7 +42,21 @@ DeviceEditorWidget::DeviceEditorWidget(QWidget *parent)
     auto *paramScroll = new QScrollArea(m_tabs);
     paramScroll->setWidgetResizable(true);
     paramScroll->setWidget(m_paramTab);
-    m_tabs->addTab(paramScroll, tr("Parameter"));
+
+    auto *paramTabContainer = new QWidget(m_tabs);
+    auto *paramTabLayout    = new QVBoxLayout(paramTabContainer);
+    paramTabLayout->setContentsMargins(0, 0, 0, 0);
+    paramTabLayout->addWidget(paramScroll);
+
+    auto *readRow = new QHBoxLayout;
+    m_readBtn = new QPushButton(tr("Vom Gerät lesen"), paramTabContainer);
+    m_readBtn->setEnabled(false);
+    readRow->addStretch();
+    readRow->addWidget(m_readBtn);
+    paramTabLayout->addLayout(readRow);
+    connect(m_readBtn, &QPushButton::clicked, this, &DeviceEditorWidget::onReadParametersClicked);
+
+    m_tabs->addTab(paramTabContainer, tr("Parameter"));
 
     m_comObjTab = new QWidget(m_tabs);
     m_tabs->addTab(m_comObjTab, tr("Kommunikationsobjekte"));
@@ -55,6 +74,20 @@ DeviceEditorWidget::DeviceEditorWidget(QWidget *parent)
     m_tabs->setEnabled(false);
 }
 
+void DeviceEditorWidget::setInterfaceManager(InterfaceManager *mgr)
+{
+    if (m_iface == mgr)
+        return;
+    if (m_iface)
+        disconnect(m_iface, &InterfaceManager::cemiFrameReceived,
+                   this, &DeviceEditorWidget::onCemiReceived);
+    m_iface = mgr;
+    if (m_iface)
+        connect(m_iface, &InterfaceManager::cemiFrameReceived,
+                this, &DeviceEditorWidget::onCemiReceived);
+    m_readBtn->setEnabled(m_iface && m_iface->isConnected() && m_device);
+}
+
 void DeviceEditorWidget::clearDevice()
 {
     m_device  = nullptr;
@@ -62,6 +95,9 @@ void DeviceEditorWidget::clearDevice()
     m_title->setText(tr("Kein Gerät ausgewählt"));
     clearTabs();
     m_tabs->setEnabled(false);
+    m_readBtn->setEnabled(false);
+    m_readBuffer.clear();
+    m_readExpected = 0;
 }
 
 void DeviceEditorWidget::setDevice(DeviceInstance *device, Project *project)
@@ -82,6 +118,7 @@ void DeviceEditorWidget::setDevice(DeviceInstance *device, Project *project)
     buildParameterTab();
     buildComObjectTab();
     m_tabs->setEnabled(true);
+    m_readBtn->setEnabled(m_iface && m_iface->isConnected());
 }
 
 void DeviceEditorWidget::clearTabs()
@@ -334,4 +371,96 @@ void DeviceEditorWidget::onComObjectLinkChanged(int row)
     }
 
     emit deviceModified();
+}
+
+void DeviceEditorWidget::onReadParametersClicked()
+{
+    if (!m_device || !m_iface || !m_iface->activeInterface())
+        return;
+    const KnxApplicationProgram *app = m_device->appProgram();
+    if (!app || app->memoryLayout.parameterSize == 0)
+        return;
+
+    const uint16_t pa   = CemiFrame::physAddrFromString(m_device->physicalAddress());
+    const uint16_t base = static_cast<uint16_t>(app->memoryLayout.parameterBase);
+    uint32_t       size = app->memoryLayout.parameterSize;
+
+    m_readBaseAddr = base;
+    m_readBuffer.clear();
+    m_readExpected = static_cast<int>(size);
+
+    // Send read requests in 63-byte chunks
+    uint16_t offset = 0;
+    while (size > 0) {
+        const uint8_t chunk = static_cast<uint8_t>(size > 63 ? 63 : size);
+        m_iface->activeInterface()->sendCemiFrame(
+            CemiFrame::buildMemoryRead(pa, static_cast<uint16_t>(base + offset), chunk));
+        offset += chunk;
+        size   -= chunk;
+    }
+
+    m_readBtn->setEnabled(false);
+}
+
+void DeviceEditorWidget::onCemiReceived(const QByteArray &cemi)
+{
+    if (!m_device)
+        return;
+    const CemiFrame frame = CemiFrame::fromBytes(cemi);
+    if (!frame.isMemoryResponse())
+        return;
+
+    const uint16_t pa = CemiFrame::physAddrFromString(m_device->physicalAddress());
+    if (frame.sourceAddress != pa)
+        return;
+
+    uint16_t   addr;
+    QByteArray data;
+    if (!frame.memoryResponseData(addr, data))
+        return;
+
+    const int bufOffset = addr - m_readBaseAddr;
+    if (bufOffset < 0)
+        return;
+    if (m_readBuffer.size() < bufOffset + data.size())
+        m_readBuffer.resize(bufOffset + data.size());
+    for (int i = 0; i < data.size(); ++i)
+        m_readBuffer[bufOffset + i] = data[i];
+
+    if (m_readBuffer.size() >= m_readExpected) {
+        applyReadbackValues(m_readBuffer, m_readBaseAddr);
+        m_readBuffer.clear();
+        m_readExpected = 0;
+        m_readBtn->setEnabled(true);
+    }
+}
+
+void DeviceEditorWidget::applyReadbackValues(const QByteArray &memory, uint16_t baseAddr)
+{
+    if (!m_device)
+        return;
+    const KnxApplicationProgram *app = m_device->appProgram();
+    if (!app)
+        return;
+
+    for (const KnxParameter &p : app->parameters) {
+        QWidget *w = m_paramWidgets.value(p.id);
+        if (!w)
+            continue;
+        const int memOffset = static_cast<int>(p.offset) - static_cast<int>(baseAddr);
+        if (memOffset < 0 || memOffset >= memory.size())
+            continue;
+
+        const uint8_t raw = static_cast<uint8_t>(memory[memOffset]);
+        auto it = m_device->parameters().find(p.id);
+        const int projectVal = (it != m_device->parameters().end()) ? it->second.toInt() : p.defaultValue.toInt();
+        const bool match = (static_cast<int>(raw) == projectVal);
+
+        w->setStyleSheet(match
+            ? QStringLiteral("background-color: #c8e6c9;")
+            : QStringLiteral("background-color: #ffcdd2;"));
+        w->setToolTip(match
+            ? tr("Gerätewert stimmt überein: %1").arg(raw)
+            : tr("Abweichung! Gerät: %1  Projekt: %2").arg(raw).arg(projectVal));
+    }
 }

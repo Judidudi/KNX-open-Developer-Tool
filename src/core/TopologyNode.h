@@ -24,8 +24,10 @@ public:
     void setName(const QString &name) { m_name = name; }
 
     // Child nodes (Areas contain Lines)
-    void                addChild(std::unique_ptr<TopologyNode> child);
-    void                removeChildAt(int index);
+    void                             addChild(std::unique_ptr<TopologyNode> child);
+    void                             removeChildAt(int index);
+    std::unique_ptr<TopologyNode>    takeChildAt(int index);
+    void                             insertChildAt(int index, std::unique_ptr<TopologyNode> child);
     TopologyNode       *childAt(int index);
     const TopologyNode *childAt(int index) const;
     int                 childCount() const;
@@ -33,10 +35,13 @@ public:
     int                 indexOfChild(const TopologyNode *child) const;
 
     // Devices (only valid on Line nodes)
-    void           addDevice(std::unique_ptr<DeviceInstance> device);
-    void           removeDeviceAt(int index);
-    DeviceInstance *deviceAt(int index);
-    int             deviceCount() const;
+    void                             addDevice(std::unique_ptr<DeviceInstance> device);
+    void                             removeDeviceAt(int index);
+    std::unique_ptr<DeviceInstance>  takeDeviceAt(int index);
+    void                             insertDeviceAt(int index, std::unique_ptr<DeviceInstance> device);
+    DeviceInstance       *deviceAt(int index);
+    const DeviceInstance *deviceAt(int index) const;
+    int                   deviceCount() const;
     int             indexOfDevice(const DeviceInstance *dev) const;
 
 private:

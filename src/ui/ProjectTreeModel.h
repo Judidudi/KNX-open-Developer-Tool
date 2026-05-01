@@ -64,6 +64,13 @@ public:
     bool        setData(const QModelIndex &index, const QVariant &value, int role = Qt::EditRole) override;
     QVariant    headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
 
+    // Drag & drop (move Device nodes between Line nodes)
+    Qt::DropActions supportedDropActions() const override;
+    QStringList     mimeTypes() const override;
+    QMimeData      *mimeData(const QModelIndexList &indexes) const override;
+    bool            dropMimeData(const QMimeData *data, Qt::DropAction action,
+                                 int row, int column, const QModelIndex &parent) override;
+
 private:
     struct Node;
     Node     *nodeFromIndex(const QModelIndex &index) const;

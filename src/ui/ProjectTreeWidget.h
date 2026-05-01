@@ -29,6 +29,9 @@ public:
 
     ProjectTreeModel *model() const { return m_model; }
 
+    // Returns all DeviceInstance* currently selected in the topology view.
+    QList<DeviceInstance *> selectedDevices() const;
+
 signals:
     void deviceSelected(DeviceInstance *device);
     void groupAddressSelected(GroupAddress *ga);
@@ -43,6 +46,7 @@ signals:
     void deleteAreaRequested(TopologyNode *area);
     void deleteLineRequested(TopologyNode *line);
     void deleteDeviceRequested(DeviceInstance *dev);
+    void duplicateDeviceRequested(DeviceInstance *dev, TopologyNode *line);
 
     // G1: Group address management
     void addMainGroupRequested();
@@ -58,6 +62,9 @@ signals:
     // Signals that something was modified (rename etc.)
     void projectModified();
 
+    // Emitted when user clicks "Katalogdatei importieren..." in catalog tab
+    void catalogImportRequested();
+
 public slots:
     // Called by the key event filters installed on each tree view
     void onTopoKeyPressed(int key, const QModelIndex &index);
@@ -70,6 +77,7 @@ private slots:
     void onTopoContextMenu(const QPoint &pos);
     void onGaContextMenu(const QPoint &pos);
     void onBuildingContextMenu(const QPoint &pos);
+    void onGaSearchChanged(const QString &text);
 
 private:
     void updateRootIndices();
@@ -82,4 +90,6 @@ private:
     QTreeView        *m_buildingView = nullptr;
     CatalogWidget    *m_catWidget    = nullptr;
     ProjectTreeModel *m_model        = nullptr;
+    class QSortFilterProxyModel *m_gaProxy = nullptr;
+    class QLineEdit             *m_gaSearch = nullptr;
 };

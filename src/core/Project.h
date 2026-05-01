@@ -27,8 +27,10 @@ public:
     void    setKnxprojId(const QString &id)      { m_knxprojId = id;  }
 
     // Topology: list of areas (top-level nodes)
-    void         addArea(std::unique_ptr<TopologyNode> area);
-    void         removeAreaAt(int index);
+    void                          addArea(std::unique_ptr<TopologyNode> area);
+    void                          removeAreaAt(int index);
+    std::unique_ptr<TopologyNode> takeAreaAt(int index);
+    void                          insertAreaAt(int index, std::unique_ptr<TopologyNode> area);
     TopologyNode *areaAt(int index);
     int           areaCount() const;
 

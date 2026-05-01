@@ -3,10 +3,14 @@
 #include <algorithm>
 
 // APCI codes (KNX spec 03_03_07 "Application Layer", Table 2)
-static constexpr uint16_t APCI_GROUP_VALUE_WRITE         = 0x080;
-static constexpr uint16_t APCI_INDIVIDUAL_ADDRESS_WRITE  = 0x0C0;
-static constexpr uint16_t APCI_MEMORY_WRITE              = 0x280;
-static constexpr uint16_t APCI_RESTART                   = 0x380;
+static constexpr uint16_t APCI_GROUP_VALUE_READ           = 0x000;
+static constexpr uint16_t APCI_GROUP_VALUE_RESPONSE       = 0x040;
+static constexpr uint16_t APCI_GROUP_VALUE_WRITE          = 0x080;
+static constexpr uint16_t APCI_INDIVIDUAL_ADDRESS_WRITE   = 0x0C0;
+static constexpr uint16_t APCI_MEMORY_WRITE               = 0x280;
+static constexpr uint16_t APCI_DEVICE_DESCRIPTOR_READ     = 0x300;
+static constexpr uint16_t APCI_DEVICE_DESCRIPTOR_RESPONSE = 0x340;
+static constexpr uint16_t APCI_RESTART                    = 0x380;
 
 // ---------- raw CEMI encoding / decoding -----------------------------------
 
@@ -80,6 +84,32 @@ QByteArray CemiFrame::buildGroupValueWrite(uint16_t groupAddr, const QByteArray 
     return f.toBytes();
 }
 
+QByteArray CemiFrame::buildGroupValueRead(uint16_t groupAddr)
+{
+    CemiFrame f;
+    f.messageCode   = MessageCode::LDataReq;
+    f.sourceAddress = 0x0000;
+    f.destAddress   = groupAddr;
+    f.groupAddress  = true;
+    // APCI 0x000 = GroupValue_Read, 2 zero bytes, no payload
+    f.apdu.append(char(0x00));
+    f.apdu.append(char(0x00));
+    return f.toBytes();
+}
+
+QByteArray CemiFrame::buildDeviceDescriptorRead(uint16_t physAddr)
+{
+    CemiFrame f;
+    f.messageCode   = MessageCode::LDataReq;
+    f.sourceAddress = 0x0000;
+    f.destAddress   = physAddr;
+    f.groupAddress  = false;
+    // APCI 0x300 = DeviceDescriptor_Read, descriptor type 0
+    f.apdu.append(char(0x03));  // TPCI=0, APCI bits 9-8 = 3
+    f.apdu.append(char(0x00));  // APCI bits 7-0 = 0 (type 0)
+    return f.toBytes();
+}
+
 QByteArray CemiFrame::buildIndividualAddressWrite(uint16_t newPhysAddr)
 {
     CemiFrame f;
@@ -134,6 +164,25 @@ QByteArray CemiFrame::buildRestart(uint16_t destPhysAddr)
     return f.toBytes();
 }
 
+QByteArray CemiFrame::buildMemoryRead(uint16_t destPhysAddr, uint16_t memAddr, uint8_t count)
+{
+    CemiFrame f;
+    f.messageCode   = MessageCode::LDataReq;
+    f.sourceAddress = 0x0000;
+    f.destAddress   = destPhysAddr;
+    f.groupAddress  = false;
+
+    const uint8_t cnt = (count == 0 || count > 63) ? 63 : count;
+    // APCI A_Memory_Read = 0x0200 | count
+    // Byte 0: 0x42 = T_Data_Connected(seq=0) | APCI[9:8]=0b10
+    // Byte 1: 0x00 | cnt
+    f.apdu.append(char(0x42));
+    f.apdu.append(static_cast<char>(cnt & 0x3F));   // APCI[7:0] = count (no high bits set)
+    f.apdu.append(static_cast<char>(memAddr >> 8));
+    f.apdu.append(static_cast<char>(memAddr & 0xFF));
+    return f.toBytes();
+}
+
 // ---------- APDU inspection ------------------------------------------------
 
 uint16_t CemiFrame::apci() const
@@ -149,6 +198,34 @@ bool CemiFrame::isGroupValueWrite() const
 {
     const uint16_t a = apci();
     return (a & 0x3C0) == APCI_GROUP_VALUE_WRITE;
+}
+
+bool CemiFrame::isGroupValueResponse() const
+{
+    const uint16_t a = apci();
+    return (a & 0x3C0) == APCI_GROUP_VALUE_RESPONSE;
+}
+
+bool CemiFrame::isDeviceDescriptorResponse() const
+{
+    if (apdu.size() < 4) return false;
+    return (apci() & 0x3FC) == APCI_DEVICE_DESCRIPTOR_RESPONSE;
+}
+
+bool CemiFrame::isMemoryResponse() const
+{
+    if (apdu.size() < 4 || groupAddress) return false;
+    // A_Memory_Response APCI = 0x240 | count (bits 9:6 = 0b1001)
+    return (apci() & 0x3C0) == 0x240;
+}
+
+bool CemiFrame::memoryResponseData(uint16_t &addr, QByteArray &data) const
+{
+    if (!isMemoryResponse() || apdu.size() < 4) return false;
+    const uint8_t count = static_cast<uint8_t>(apdu[1]) & 0x3F;
+    addr = (static_cast<uint8_t>(apdu[2]) << 8) | static_cast<uint8_t>(apdu[3]);
+    data = apdu.mid(4, count);
+    return !data.isEmpty();
 }
 
 QByteArray CemiFrame::groupValuePayload() const

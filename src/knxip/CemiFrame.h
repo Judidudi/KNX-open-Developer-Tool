@@ -26,6 +26,8 @@ struct CemiFrame
 
     // Builds a full L_Data_Req CEMI frame for group-value writing.
     static QByteArray buildGroupValueWrite(uint16_t groupAddr, const QByteArray &value);
+    // Builds a GroupValue_Read request (triggers devices to respond with their current value).
+    static QByteArray buildGroupValueRead(uint16_t groupAddr);
     // Build a broadcast / programming-mode frame for A_IndividualAddress_Write.
     // Sent to group address 0x0000 in broadcast mode. The new physical address is the payload.
     static QByteArray buildIndividualAddressWrite(uint16_t newPhysAddr);
@@ -36,10 +38,20 @@ struct CemiFrame
                                        uint16_t memoryAddress,
                                        const QByteArray &data);
     static QByteArray buildRestart(uint16_t destPhysAddr);
+    // Send A_DeviceDescriptor_Read to an individual address (used for line scanning).
+    static QByteArray buildDeviceDescriptorRead(uint16_t physAddr);
+    // Send A_Memory_Read point-to-point (reads up to 63 bytes starting at memAddr).
+    static QByteArray buildMemoryRead(uint16_t destPhysAddr, uint16_t memAddr, uint8_t count);
 
     // APDU extraction helpers (APCI = upper 4 bits of APDU[0] + upper 6 bits of APDU[1])
     uint16_t apci() const;
     bool     isGroupValueWrite() const;
+    bool     isGroupValueResponse() const;
+    bool     isDeviceDescriptorResponse() const;
+    // True for A_Memory_Response (APCI = 0x240 | count) from an individual address.
+    bool     isMemoryResponse() const;
+    // Extract address and data from A_Memory_Response. Returns false if not a valid response.
+    bool     memoryResponseData(uint16_t &addr, QByteArray &data) const;
     QByteArray groupValuePayload() const;
 
     // Human-readable KNX physical address (e.g. "1.1.1")

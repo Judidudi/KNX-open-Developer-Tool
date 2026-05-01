@@ -18,6 +18,7 @@ CatalogWidget::CatalogWidget(QWidget *parent)
     , m_view(new QListView(this))
     , m_filterEdit(new QLineEdit(this))
     , m_addButton(new QPushButton(tr("Zur Topologie hinzufügen"), this))
+    , m_importButton(new QPushButton(tr("Katalogdatei importieren…"), this))
 {
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -39,9 +40,11 @@ CatalogWidget::CatalogWidget(QWidget *parent)
 
     m_addButton->setEnabled(false);
     layout->addWidget(m_addButton);
+    layout->addWidget(m_importButton);
 
-    connect(m_filterEdit, &QLineEdit::textChanged, this, &CatalogWidget::onFilterChanged);
-    connect(m_addButton,  &QPushButton::clicked,   this, &CatalogWidget::onAddClicked);
+    connect(m_filterEdit,  &QLineEdit::textChanged,  this, &CatalogWidget::onFilterChanged);
+    connect(m_addButton,   &QPushButton::clicked,     this, &CatalogWidget::onAddClicked);
+    connect(m_importButton,&QPushButton::clicked,     this, &CatalogWidget::onImportClicked);
     connect(m_view, &QListView::doubleClicked, this, [this](const QModelIndex &){ onActivated(); });
     connect(m_view->selectionModel(), &QItemSelectionModel::selectionChanged,
             this, [this](){ m_addButton->setEnabled(selectedProduct() != nullptr); });
@@ -77,4 +80,9 @@ void CatalogWidget::onActivated()
     const KnxHardwareProduct *p = selectedProduct();
     if (p && p->appProgram)
         emit addDeviceRequested(p->productId, p->productName, p->appProgram);
+}
+
+void CatalogWidget::onImportClicked()
+{
+    emit importRequested();
 }
