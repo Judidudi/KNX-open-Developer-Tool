@@ -5,7 +5,7 @@
 #include <cstdint>
 
 // Minimal CEMI L_Data frame representation.
-// KNX spec: 03_06_03 EMI_IMI, section 4.
+// KNX spec: 03_06_03 EMI/IMI section 4.
 struct CemiFrame
 {
     enum class MessageCode : uint8_t {
@@ -24,40 +24,95 @@ struct CemiFrame
     static CemiFrame fromBytes(const QByteArray &data);
     QByteArray       toBytes() const;
 
-    // Builds a full L_Data_Req CEMI frame for group-value writing.
+    // ── High-level frame builders (Application Layer) ────────────────────────
+
+    // Group-oriented (broadcast or multicast)
     static QByteArray buildGroupValueWrite(uint16_t groupAddr, const QByteArray &value);
-    // Builds a GroupValue_Read request (triggers devices to respond with their current value).
     static QByteArray buildGroupValueRead(uint16_t groupAddr);
-    // Build a broadcast / programming-mode frame for A_IndividualAddress_Write.
-    // Sent to group address 0x0000 in broadcast mode. The new physical address is the payload.
+
+    // Broadcast: A_IndividualAddress_Write (program new PA into prog-mode device)
     static QByteArray buildIndividualAddressWrite(uint16_t newPhysAddr);
-    // Build an A_Memory_Write point-to-point frame.
-    // NOTE: real point-to-point transport requires a T_Connect handshake; the
-    // frame we produce here uses a numbered data telegram (sequence = 0).
+    // Broadcast: A_IndividualAddress_Read (asks all prog-mode devices to respond)
+    static QByteArray buildIndividualAddressRead();
+
+    // Connection-less point-to-point
+    static QByteArray buildDeviceDescriptorRead(uint16_t physAddr);
+
+    // ── Transport Layer (KNX spec 03_03_04) ──────────────────────────────────
+
+    // T_Connect: opens a transport-layer connection to destPhysAddr.
+    static QByteArray buildTConnect(uint16_t destPhysAddr);
+    // T_Disconnect: closes the connection.
+    static QByteArray buildTDisconnect(uint16_t destPhysAddr);
+    // T_ACK[seqNum]: acknowledges a received T_Data_Connected.
+    static QByteArray buildTAck(uint16_t destPhysAddr, uint8_t seqNum);
+    // T_NAK[seqNum]: negative acknowledgment (used to request retransmit).
+    static QByteArray buildTNak(uint16_t destPhysAddr, uint8_t seqNum);
+
+    // ── Connection-oriented point-to-point (use within an open T_Connect) ───
+
+    // A_Memory_Write at memoryAddress (data ≤ 12 bytes per KNX spec); seqNum = 0..15
     static QByteArray buildMemoryWrite(uint16_t destPhysAddr,
                                        uint16_t memoryAddress,
-                                       const QByteArray &data);
-    static QByteArray buildRestart(uint16_t destPhysAddr);
-    // Send A_DeviceDescriptor_Read to an individual address (used for line scanning).
-    static QByteArray buildDeviceDescriptorRead(uint16_t physAddr);
-    // Send A_Memory_Read point-to-point (reads up to 63 bytes starting at memAddr).
-    static QByteArray buildMemoryRead(uint16_t destPhysAddr, uint16_t memAddr, uint8_t count);
+                                       const QByteArray &data,
+                                       uint8_t seqNum = 0);
+    // A_Memory_Read of `count` bytes at memAddr; seqNum = 0..15
+    static QByteArray buildMemoryRead(uint16_t destPhysAddr,
+                                      uint16_t memAddr,
+                                      uint8_t count,
+                                      uint8_t seqNum = 0);
 
-    // APDU extraction helpers (APCI = upper 4 bits of APDU[0] + upper 6 bits of APDU[1])
+    // A_Restart (basic).
+    static QByteArray buildRestart(uint16_t destPhysAddr, uint8_t seqNum = 0);
+
+    // A_PropertyValue_Read (Interface Object access). objIndex selects which
+    // Application Object (0=AddrTable, 1=AssocTable, 2=AppProgram, 3=BAU).
+    // propId 5 = LoadStateControl. count = number of elements.
+    static QByteArray buildPropertyValueRead(uint16_t destPhysAddr,
+                                             uint8_t  objIndex,
+                                             uint8_t  propId,
+                                             uint8_t  count,
+                                             uint16_t startIndex,
+                                             uint8_t  seqNum = 0);
+    static QByteArray buildPropertyValueWrite(uint16_t destPhysAddr,
+                                              uint8_t  objIndex,
+                                              uint8_t  propId,
+                                              uint8_t  count,
+                                              uint16_t startIndex,
+                                              const QByteArray &data,
+                                              uint8_t  seqNum = 0);
+
+    // ── APDU inspection helpers ──────────────────────────────────────────────
+
+    // 10-bit APCI (extracted from APDU bytes 0..1).
     uint16_t apci() const;
-    bool     isGroupValueWrite() const;
-    bool     isGroupValueResponse() const;
-    bool     isDeviceDescriptorResponse() const;
-    // True for A_Memory_Response (APCI = 0x240 | count) from an individual address.
-    bool     isMemoryResponse() const;
-    // Extract address and data from A_Memory_Response. Returns false if not a valid response.
-    bool     memoryResponseData(uint16_t &addr, QByteArray &data) const;
-    QByteArray groupValuePayload() const;
 
-    // Human-readable KNX physical address (e.g. "1.1.1")
+    bool isGroupValueWrite() const;
+    bool isGroupValueResponse() const;
+    bool isDeviceDescriptorResponse() const;
+    bool isMemoryResponse() const;
+    bool isPropertyValueResponse() const;
+    bool isIndividualAddressResponse() const;
+
+    // Transport-layer inspection
+    bool    isTConnect() const;
+    bool    isTDisconnect() const;
+    bool    isTAck() const;
+    bool    isTNak() const;
+    bool    isTDataConnected() const;
+    uint8_t tSeqNumber() const;   // 0..15, valid for T_Data_Connected / T_ACK / T_NAK
+
+    // Decoded payloads
+    QByteArray groupValuePayload() const;
+    bool       memoryResponseData(uint16_t &addr, QByteArray &data) const;
+    bool       propertyValueResponseData(uint8_t &objIndex, uint8_t &propId,
+                                          uint8_t &count, uint16_t &startIndex,
+                                          QByteArray &data) const;
+
+    // ── Address conversion ───────────────────────────────────────────────────
+
     static QString  physAddrToString(uint16_t addr);
     static uint16_t physAddrFromString(const QString &s);
-    // Human-readable group address (e.g. "0/0/1")
     static QString  groupAddrToString(uint16_t addr);
     static uint16_t groupAddrFromString(const QString &s);
 };

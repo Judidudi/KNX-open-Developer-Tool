@@ -276,18 +276,47 @@ bool KnxprojSerializer::save(Project &project, const QString &filePath)
 
 // ─── Load ────────────────────────────────────────────────────────────────────
 
-std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
+static void setErr(QString *errorOut, const QString &msg)
 {
-    const auto entries = ZipUtils::readEntries(filePath);
-    if (entries.isEmpty()) {
-        qWarning() << "KnxprojSerializer: cannot read ZIP from" << filePath;
+    if (errorOut) *errorOut = msg;
+    qWarning().noquote() << "KnxprojSerializer:" << msg;
+}
+
+std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath, QString *errorOut)
+{
+    if (errorOut) errorOut->clear();
+
+    QFile probe(filePath);
+    if (!probe.exists()) {
+        setErr(errorOut, QObject::tr("Datei existiert nicht: %1").arg(filePath));
         return nullptr;
     }
 
-    // 1. Read project ID from root 0.xml
-    const QByteArray rootXml = entries.value(QStringLiteral("0.xml"));
+    const auto entries = ZipUtils::readEntries(filePath);
+    if (entries.isEmpty()) {
+        setErr(errorOut,
+               QObject::tr("Datei kann nicht gelesen werden oder ist kein gültiges ZIP/.knxproj.\n"
+                           "Geschützte (passwort-gesicherte) ETS-Projekte werden nicht unterstützt."));
+        return nullptr;
+    }
+
+    // 1. Read project ID from root 0.xml.
+    //    ETS 4 projects have no root 0.xml; instead metadata lives in P-*/Project.xml.
+    QByteArray rootXml = entries.value(QStringLiteral("0.xml"));
     if (rootXml.isEmpty()) {
-        qWarning() << "KnxprojSerializer: no 0.xml found in" << filePath;
+        for (auto it = entries.constBegin(); it != entries.constEnd(); ++it) {
+            const QString &k = it.key();
+            if (k.startsWith(QLatin1String("P-")) && k.endsWith(QLatin1String("/Project.xml"))) {
+                rootXml = it.value();
+                qWarning().noquote() << "KnxprojSerializer: no root 0.xml – using" << k << "(ETS 4 format)";
+                break;
+            }
+        }
+    }
+    if (rootXml.isEmpty()) {
+        setErr(errorOut,
+               QObject::tr("Im Archiv fehlt die Datei 0.xml (gefundene Einträge: %1).")
+                   .arg(QStringList(entries.keys()).join(QStringLiteral(", "))));
         return nullptr;
     }
 
@@ -309,14 +338,30 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
         }
     }
     if (projectId.isEmpty()) {
-        qWarning() << "KnxprojSerializer: no Project/@Id found in 0.xml of" << filePath;
+        setErr(errorOut,
+               QObject::tr("Kein <Project Id=\"...\"> in 0.xml gefunden – möglicherweise kein ETS-kompatibles Projekt."));
         return nullptr;
     }
 
-    // 2. Read main project XML
-    const QByteArray projXml = entries.value(QStringLiteral("P-%1/0.xml").arg(projectId));
+    // 2. Read main project XML — try the canonical path, then any P-*/0.xml
+    QByteArray projXml = entries.value(QStringLiteral("P-%1/0.xml").arg(projectId));
     if (projXml.isEmpty()) {
-        qWarning() << "KnxprojSerializer: missing P-" << projectId << "/0.xml in" << filePath;
+        // Tolerant fallback: take the first P-*/0.xml entry that exists
+        for (auto it = entries.constBegin(); it != entries.constEnd(); ++it) {
+            const QString &k = it.key();
+            if (k.startsWith(QLatin1String("P-")) && k.endsWith(QLatin1String("/0.xml"))) {
+                projXml = it.value();
+                qWarning().noquote()
+                    << "KnxprojSerializer: project ID mismatch – falling back to" << k;
+                break;
+            }
+        }
+    }
+    if (projXml.isEmpty()) {
+        setErr(errorOut,
+               QObject::tr("Hauptprojektdatei P-%1/0.xml fehlt im Archiv.\n"
+                           "Falls das Projekt mit ETS Pro signiert/verschlüsselt wurde, kann es nicht geladen werden.")
+                   .arg(projectId));
         return nullptr;
     }
 
@@ -403,12 +448,19 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
             const int devAddr = attrs.value(QLatin1String("Address")).toInt();
             const QString physAddr = QStringLiteral("%1.%2.%3").arg(areaAddr).arg(lineAddr).arg(devAddr);
 
+            // AppProgramRefId is our own attribute (ETS 5/6 projects use Hardware2ProgramRefId).
+            const QString appRef = !attrs.value(QLatin1String("AppProgramRefId")).isEmpty()
+                ? attrs.value(QLatin1String("AppProgramRefId")).toString()
+                : attrs.value(QLatin1String("Hardware2ProgramRefId")).toString();
+
             auto dev = std::make_unique<DeviceInstance>(
                 devId,
                 attrs.value(QLatin1String("ProductRefId")).toString(),
-                attrs.value(QLatin1String("AppProgramRefId")).toString());
+                appRef);
             dev->setPhysicalAddress(physAddr);
-            dev->setDescription(attrs.value(QLatin1String("Description")).toString());
+            dev->setDescription(attrs.value(QLatin1String("Name")).toString().isEmpty()
+                                ? attrs.value(QLatin1String("Description")).toString()
+                                : attrs.value(QLatin1String("Name")).toString());
             currentDev = dev.get();
             currentLine->addDevice(std::move(dev));
 
@@ -473,8 +525,12 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath)
         }
     }
 
-    if (xml.hasError())
+    if (xml.hasError()) {
+        setErr(errorOut,
+               QObject::tr("XML-Fehler beim Parsen der Hauptprojektdatei: %1 (Zeile %2)")
+                   .arg(xml.errorString()).arg(xml.lineNumber()));
         return nullptr;
+    }
 
     project->setName(projName);
 

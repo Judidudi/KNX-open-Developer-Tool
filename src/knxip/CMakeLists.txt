@@ -14,6 +14,8 @@ add_library(knxodt_knxip STATIC
     DeviceProgrammer.cpp
     LineScanRunner.h
     LineScanRunner.cpp
+    TransportConnection.h
+    TransportConnection.cpp
 )
 
 target_include_directories(knxodt_knxip PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

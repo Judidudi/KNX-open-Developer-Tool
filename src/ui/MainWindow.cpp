@@ -366,10 +366,13 @@ void MainWindow::openProject()
     if (path.isEmpty())
         return;
 
-    auto loaded = KnxprojSerializer::load(path);
+    QString loadError;
+    auto loaded = KnxprojSerializer::load(path, &loadError);
     if (!loaded) {
-        QMessageBox::critical(this, tr("Fehler"),
-            tr("Projekt konnte nicht geöffnet werden:\n%1").arg(path));
+        QMessageBox::critical(this, tr("Projekt konnte nicht geöffnet werden"),
+            tr("Datei: %1\n\n%2")
+                .arg(path,
+                     loadError.isEmpty() ? tr("Unbekannter Fehler.") : loadError));
         return;
     }
 
@@ -586,10 +589,31 @@ void MainWindow::onImportCatalogFile()
         return;
     }
 
+    // Try to load JUST the imported file first so we can give a specific report.
+    const int countBefore = m_catalog->count();
+    const int added = m_catalog->importFile(dst);
+    const QStringList errs = m_catalog->lastErrors();
+
+    // Re-scan all paths so any other catalog files stay loaded.
     m_catalog->reload();
     m_projectTree->setCatalog(m_catalog.get());
-    const int count = m_catalog->count();
-    statusBar()->showMessage(tr("Katalog geladen: %1 Produkt(e)").arg(count));
+
+    if (added <= 0) {
+        const QString detail = errs.isEmpty()
+            ? tr("Die Datei enthält keine ladbaren KNX-Produkte.")
+            : errs.join(QStringLiteral("\n"));
+        QMessageBox::warning(this, tr("Katalog-Import fehlgeschlagen"),
+            tr("Aus der Datei \"%1\" konnten keine Produkte geladen werden.\n\n%2")
+                .arg(QFileInfo(src).fileName(), detail));
+        // Remove the imported (broken) file so the user can retry cleanly
+        QFile::remove(dst);
+        return;
+    }
+
+    const int totalNow = m_catalog->count();
+    statusBar()->showMessage(
+        tr("%1 Produkt(e) importiert (Gesamt: %2)").arg(added).arg(totalNow));
+    Q_UNUSED(countBefore);
 }
 
 void MainWindow::onImportGaCsv()
@@ -712,10 +736,13 @@ void MainWindow::onOpenRecentFile(const QString &path)
     }
     if (!maybeSave()) return;
 
-    auto loaded = KnxprojSerializer::load(path);
+    QString loadError;
+    auto loaded = KnxprojSerializer::load(path, &loadError);
     if (!loaded) {
-        QMessageBox::critical(this, tr("Fehler"),
-            tr("Projekt konnte nicht geöffnet werden:\n%1").arg(path));
+        QMessageBox::critical(this, tr("Projekt konnte nicht geöffnet werden"),
+            tr("Datei: %1\n\n%2")
+                .arg(path,
+                     loadError.isEmpty() ? tr("Unbekannter Fehler.") : loadError));
         return;
     }
 

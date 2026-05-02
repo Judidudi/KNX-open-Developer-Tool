@@ -25,3 +25,8 @@ add_test(NAME test_table_builder COMMAND test_table_builder)
 qt_add_executable(test_programmer test_programmer.cpp)
 target_link_libraries(test_programmer PRIVATE Qt6::Test knxodt_core knxodt_knxip)
 add_test(NAME test_programmer COMMAND test_programmer)
+
+# TransportConnection unit tests
+qt_add_executable(test_transport_connection test_transport_connection.cpp)
+target_link_libraries(test_transport_connection PRIVATE Qt6::Test knxodt_core knxodt_knxip)
+add_test(NAME test_transport_connection COMMAND test_transport_connection)

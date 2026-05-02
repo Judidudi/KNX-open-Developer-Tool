@@ -16,26 +16,35 @@ struct HwInfo {
 };
 
 // Parse a hardware XML file and return all products it describes.
-// ETS6 hardware XMLs may contain multiple <Hardware> blocks (multi-variant products).
+// A single <Hardware> block may contain multiple <Product> entries (variants that share
+// one application program). We collect every product and emit one HwInfo per product.
 static QList<HwInfo> parseHardwareXml(const QByteArray &xml)
 {
     QList<HwInfo> results;
     QString manufacturer;
-    HwInfo current;
     QString currentHwName;
+    QString currentAppRef;
+    QList<QPair<QString, QString>> currentProducts; // (Id, Text) within current <Hardware>
 
     QXmlStreamReader rd(xml);
     while (!rd.atEnd()) {
         const auto token = rd.readNext();
 
         if (token == QXmlStreamReader::EndElement) {
-            // Commit product entry when leaving a Hardware block that has a product
-            if (rd.name() == QLatin1String("Hardware") && !current.productId.isEmpty()) {
-                current.manufacturer = manufacturer;
-                if (current.productName.isEmpty())
-                    current.productName = currentHwName;
-                results.append(current);
-                current = {};
+            if (rd.name() == QLatin1String("Hardware")) {
+                // Commit one HwInfo per product in this hardware block.
+                for (const auto &[productId, productText] : currentProducts) {
+                    if (productId.isEmpty() || currentAppRef.isEmpty())
+                        continue;
+                    HwInfo hw;
+                    hw.productId       = productId;
+                    hw.productName     = productText.isEmpty() ? currentHwName : productText;
+                    hw.manufacturer    = manufacturer;
+                    hw.appProgramRefId = currentAppRef;
+                    results.append(hw);
+                }
+                currentProducts.clear();
+                currentAppRef.clear();
                 currentHwName.clear();
             }
             continue;
@@ -49,25 +58,24 @@ static QList<HwInfo> parseHardwareXml(const QByteArray &xml)
             manufacturer = rd.attributes().value(QLatin1String("RefId")).toString();
 
         } else if (n == QLatin1String("Hardware")) {
-            const QString hwId = rd.attributes().value(QLatin1String("Id")).toString();
-            if (!hwId.isEmpty())
-                currentHwName = rd.attributes().value(QLatin1String("Name")).toString();
+            currentHwName = rd.attributes().value(QLatin1String("Name")).toString();
 
         } else if (n == QLatin1String("Product")) {
-            current.productId = rd.attributes().value(QLatin1String("Id")).toString();
-            if (current.productName.isEmpty())
-                current.productName = rd.attributes().value(QLatin1String("Text")).toString();
+            currentProducts.append({
+                rd.attributes().value(QLatin1String("Id")).toString(),
+                rd.attributes().value(QLatin1String("Text")).toString()
+            });
 
         } else if (n == QLatin1String("ApplicationProgramRef")) {
             const QString ref = rd.attributes().value(QLatin1String("RefId")).toString();
             if (!ref.isEmpty())
-                current.appProgramRefId = ref;
+                currentAppRef = ref;
 
         } else if (n == QLatin1String("Hardware2ProgrammeVersion")) {
-            // ETS6 standard manufacturer format
+            // ETS6 standard format (nested inside Hardware2Program)
             const QString ref = rd.attributes().value(QLatin1String("ApplicationProgramRefId")).toString();
             if (!ref.isEmpty())
-                current.appProgramRefId = ref;
+                currentAppRef = ref;
         }
     }
     return results;
@@ -371,6 +379,7 @@ void KnxprodCatalog::reload()
 {
     m_products.clear();
     m_appPrograms.clear();
+    m_lastErrors.clear();
 
     for (const QString &searchPath : m_paths) {
         const QDir dir(searchPath);
@@ -386,16 +395,33 @@ void KnxprodCatalog::reload()
     }
 }
 
+int KnxprodCatalog::importFile(const QString &path)
+{
+    m_lastErrors.clear();
+    const int before = m_products.size();
+    loadKnxprod(path);
+    return m_products.size() - before;
+}
+
 bool KnxprodCatalog::loadKnxprod(const QString &path)
 {
+    const QString tag = QFileInfo(path).fileName();
+
     const auto entries = ZipUtils::readEntries(path);
     if (entries.isEmpty()) {
-        qWarning() << "KnxprodCatalog: failed to read ZIP entries from" << path;
+        const QString msg = QStringLiteral("[%1]: Datei kann nicht gelesen werden oder ist kein gültiges ZIP/.knxprod.").arg(tag);
+        m_lastErrors.append(msg);
+        qWarning().noquote() << "KnxprodCatalog:" << msg;
         return false;
     }
 
-    // Collect all Hardware Product XMLs (name contains "_HP-")
-    // and all Application XMLs (name contains "_A-" but not "_AS-" or "_AT-").
+    // ETS6 manufacturer files use a variety of layouts:
+    //  (a) Split: hardware in *_HP-*.xml, applications in *_A-*.xml
+    //  (b) Combined: a single file contains <Hardware> and <ApplicationPrograms>
+    //  (c) Different naming conventions per vendor.
+    //
+    // To be robust, scan EVERY .xml entry for both hardware blocks and
+    // application program blocks based on XML content, not filename.
     QList<QByteArray> hwXmls;
     QMap<QString, QByteArray> appXmlsByName;    // key: entry name (for logging)
 
@@ -403,17 +429,28 @@ bool KnxprodCatalog::loadKnxprod(const QString &path)
         const QString &name = it.key();
         if (!name.endsWith(QLatin1String(".xml")))
             continue;
-        if (name.contains(QLatin1String("_HP-"))) {
-            hwXmls.append(it.value());
-        } else if (name.contains(QLatin1String("_A-")) &&
-                   !name.contains(QLatin1String("_AS-")) &&
-                   !name.contains(QLatin1String("_AT-"))) {
-            appXmlsByName.insert(name, it.value());
-        }
+        const QByteArray &xml = it.value();
+
+        // A file is treated as hardware if it contains a <Product Id=...> or
+        // <Hardware2ProgrammeVersion> element. Cheap pre-check via byte search.
+        const bool looksLikeHardware =
+            xml.contains("<Product ") || xml.contains("<Hardware2ProgrammeVersion");
+        // Treat as application program source if it has <ApplicationProgram Id=...>.
+        const bool looksLikeAppProg = xml.contains("<ApplicationProgram ");
+
+        if (looksLikeHardware)
+            hwXmls.append(xml);
+        if (looksLikeAppProg)
+            appXmlsByName.insert(name, xml);
     }
 
     if (hwXmls.isEmpty() || appXmlsByName.isEmpty()) {
-        qWarning() << "KnxprodCatalog: no Hardware or Application XML found in" << path;
+        const QString msg = QStringLiteral(
+            "[%1]: Keine Hardware-XML (*_HP-*.xml) oder Application-XML (*_A-*.xml) gefunden. "
+            "Vorhandene Einträge: %2")
+            .arg(tag, QStringList(entries.keys()).join(QStringLiteral(", ")));
+        m_lastErrors.append(msg);
+        qWarning().noquote() << "KnxprodCatalog:" << msg;
         return false;
     }
 
@@ -424,13 +461,17 @@ bool KnxprodCatalog::loadKnxprod(const QString &path)
         if (prog) {
             parsedApps.insert(prog->id, prog);
         } else {
-            qWarning() << "KnxprodCatalog: failed to parse Application XML" << it.key()
-                       << "in" << path;
+            const QString msg = QStringLiteral("[%1]: Applikations-XML konnte nicht geparst werden: %2")
+                                    .arg(tag, it.key());
+            m_lastErrors.append(msg);
+            qWarning().noquote() << "KnxprodCatalog:" << msg;
         }
     }
 
     if (parsedApps.isEmpty()) {
-        qWarning() << "KnxprodCatalog: no valid Application XMLs in" << path;
+        const QString msg = QStringLiteral("[%1]: Keine gültigen Applikationsprogramme im Archiv.").arg(tag);
+        m_lastErrors.append(msg);
+        qWarning().noquote() << "KnxprodCatalog:" << msg;
         return false;
     }
 
@@ -439,19 +480,28 @@ bool KnxprodCatalog::loadKnxprod(const QString &path)
     for (const QByteArray &hwXml : hwXmls) {
         const QList<HwInfo> hwList = parseHardwareXml(hwXml);
         if (hwList.isEmpty()) {
-            qWarning() << "KnxprodCatalog: Hardware XML yielded no products in" << path;
+            const QString msg = QStringLiteral("[%1]: Hardware-XML enthält keine Produkte.").arg(tag);
+            m_lastErrors.append(msg);
+            qWarning().noquote() << "KnxprodCatalog:" << msg;
             continue;
         }
         for (const HwInfo &hw : hwList) {
             if (hw.appProgramRefId.isEmpty()) {
-                qWarning() << "KnxprodCatalog: product" << hw.productId
-                           << "has no appProgramRefId in" << path;
+                const QString msg = QStringLiteral("[%1]: Produkt %2 hat keine ApplicationProgramRefId.")
+                                        .arg(tag, hw.productId);
+                m_lastErrors.append(msg);
+                qWarning().noquote() << "KnxprodCatalog:" << msg;
                 continue;
             }
             auto appProg = parsedApps.value(hw.appProgramRefId);
             if (!appProg) {
-                qWarning() << "KnxprodCatalog: appProgramRefId" << hw.appProgramRefId
-                           << "not found for product" << hw.productId << "in" << path;
+                const QString msg = QStringLiteral(
+                    "[%1]: Produkt %2 referenziert Applikation %3, die nicht gefunden wurde. "
+                    "Verfügbare Apps: %4")
+                    .arg(tag, hw.productId, hw.appProgramRefId,
+                         QStringList(parsedApps.keys()).join(QStringLiteral(", ")));
+                m_lastErrors.append(msg);
+                qWarning().noquote() << "KnxprodCatalog:" << msg;
                 continue;
             }
 
@@ -469,7 +519,9 @@ bool KnxprodCatalog::loadKnxprod(const QString &path)
     }
 
     if (loaded == 0) {
-        qWarning() << "KnxprodCatalog: no products successfully loaded from" << path;
+        const QString msg = QStringLiteral("[%1]: Es konnten keine Produkte erfolgreich geladen werden.").arg(tag);
+        m_lastErrors.append(msg);
+        qWarning().noquote() << "KnxprodCatalog:" << msg;
         return false;
     }
     return true;

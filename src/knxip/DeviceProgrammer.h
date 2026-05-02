@@ -3,30 +3,33 @@
 #include <QObject>
 #include <QByteArray>
 #include <QString>
-#include <QList>
 #include <QQueue>
 
 class IKnxInterface;
 class DeviceInstance;
 class KnxApplicationProgram;
+class TransportConnection;
 class QTimer;
 
-// Runs the classic KNX programming sequence for a single device:
+// ETS-compatible programming sequence (KNX spec 03_05_01 + 03_03_07).
 //
-//   1. Wait for programming-mode (user presses prog-button)
-//   2. A_IndividualAddress_Write  → sets the physical address
-//   3. A_Memory_Write (chunked)   → address table
-//   4. A_Memory_Write (chunked)   → association table
-//   5. A_Memory_Write (chunked)   → parameter block
-//   6. A_Memory_Read              → verify written parameters against expected image
-//   7. A_Restart                  → device boots with new config
+//   1. Detect a device in programming mode    (A_IndividualAddress_Read)
+//   2. Set the new physical address            (A_IndividualAddress_Write, broadcast)
+//   3. Open transport connection               (T_Connect to new PA)
+//   4. For each Application Object (0/1/2):
+//        a. PropertyValue_Write LoadState=Loading  (PID 5, value 1)
+//        b. A_Memory_Write chunks (12 bytes/frame, sequence 0..15)
+//        c. PropertyValue_Write LoadState=Loaded   (PID 5, value 2)
+//   5. Verify parameter block                  (A_Memory_Read + compare)
+//   6. A_Restart                               (still inside transport connection)
+//   7. T_Disconnect
 //
-// Large memory blocks are split into chunks of at most kChunkBytes bytes to
-// ensure compatibility with devices that do not support extended APDUs.
-// The verify step reads back the parameter block and emits finished(false,…)
-// if the content does not match. Timeout during verify is non-fatal (warning only).
+// Each connection-oriented frame is sent through TransportConnection which
+// handles T_Data_Connected sequence numbers (0..15 wrapping), T_ACK validation,
+// and retransmits on T_NAK or ACK-timeout.
 //
-// setProgModeTimeout() allows tests to use a shorter wait without 5-second delays.
+// setLoadStateMachineEnabled(false) — skip step 4a/4c for legacy firmware
+// that does not implement the Application Layer Property service.
 class DeviceProgrammer : public QObject
 {
     Q_OBJECT
@@ -35,11 +38,19 @@ public:
     enum Step {
         StepWaitProgMode,
         StepWritePhysAddress,
+        StepConnect,
+        StepLoadStartAddrTable,
         StepWriteAddressTable,
+        StepLoadEndAddrTable,
+        StepLoadStartAssocTable,
         StepWriteAssociationTable,
+        StepLoadEndAssocTable,
+        StepLoadStartAppProgram,
         StepWriteParameters,
+        StepLoadEndAppProgram,
         StepVerifyParameters,
         StepRestart,
+        StepDisconnect,
         StepDone,
     };
     Q_ENUM(Step)
@@ -48,12 +59,17 @@ public:
                      DeviceInstance              *device,
                      const KnxApplicationProgram *appProgram,
                      QObject *parent = nullptr);
+    ~DeviceProgrammer() override;
 
     void start();
     void cancel();
 
-    // Configurable prog-mode wait timeout (default 5000 ms). Mainly for tests.
-    void setProgModeTimeout(int ms) { m_progModeTimeoutMs = ms; }
+    // Tunables
+    void setProgModeTimeout(int ms)         { m_progModeTimeoutMs = ms; }
+    void setLoadStateMachineEnabled(bool e) { m_useLoadState = e; }
+    void setVerifyEnabled(bool e)           { m_verifyEnabled = e; }
+    // Underlying transport ACK timeout (default 3000 ms per KNX spec)
+    void setTransportAckTimeoutMs(int ms);
 
     static QString stepLabel(Step s);
 
@@ -64,31 +80,41 @@ signals:
     void finished(bool success, const QString &message);
 
 private slots:
-    void runNextStep();
-    void onCemiReceivedForVerify(const QByteArray &cemi);
+    void runStep();
+    void onCemiReceivedGlobal(const QByteArray &cemi);
+    void onTransportIdle();
+    void onTransportOpened();
+    void onTransportClosed();
+    void onTransportError(const QString &msg);
+    void onTransportApdu(const QByteArray &apdu);
 
 private:
-    struct MemChunk {
-        uint16_t   destPa;
-        uint16_t   memAddr;
-        QByteArray data;
-    };
+    void advance();
+    void fail(const QString &msg);
 
-    // Splits data into kChunkBytes-sized chunks and enqueues them.
-    // Does NOT start the timer — caller must do so after enqueue.
-    void enqueueMemoryWrite(uint16_t destPa, uint16_t memBase, const QByteArray &data);
-    void sendAndAdvance(const QByteArray &frame, int delayMs = 400);
+    void doStepWaitProgMode();
+    void doStepWritePhysAddress();
+    void doStepConnect();
+    void doStepLoadStart(uint8_t objIdx, Step ownStep);
+    void doStepLoadEnd(uint8_t objIdx, Step ownStep);
+    void doStepWriteMemory(uint16_t baseAddr, const QByteArray &block, Step ownStep);
+    void doStepVerify();
+    void doStepRestart();
+    void doStepDisconnect();
+    void doStepDone();
 
-    IKnxInterface              *m_iface          = nullptr;
-    DeviceInstance             *m_device         = nullptr;
-    const KnxApplicationProgram *m_appProgram    = nullptr;
-    QTimer                     *m_timer          = nullptr;
+    IKnxInterface              *m_iface         = nullptr;
+    DeviceInstance             *m_device        = nullptr;
+    const KnxApplicationProgram *m_appProgram   = nullptr;
+    TransportConnection        *m_transport     = nullptr;
+    QTimer                     *m_timer         = nullptr;
 
-    int    m_step               = StepWaitProgMode;
-    bool   m_running            = false;
-    int    m_progModeTimeoutMs  = 5000;
-
-    QQueue<MemChunk>         m_memChunks;       // pending write chunks
-    QMetaObject::Connection  m_verifyConn;      // cemiFrameReceived → onCemiReceivedForVerify
-    bool                     m_verifyStarted   = false;
+    int      m_step                  = StepWaitProgMode;
+    bool     m_running               = false;
+    int      m_progModeTimeoutMs     = 5000;
+    bool     m_useLoadState          = true;
+    bool     m_verifyEnabled         = true;
+    int      m_progResponseCount     = 0;
+    bool     m_verifyAwaiting        = false;
+    QByteArray m_expectedParamBlock;
 };
