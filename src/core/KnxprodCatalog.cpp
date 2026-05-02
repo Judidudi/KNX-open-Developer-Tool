@@ -16,26 +16,35 @@ struct HwInfo {
 };
 
 // Parse a hardware XML file and return all products it describes.
-// ETS6 hardware XMLs may contain multiple <Hardware> blocks (multi-variant products).
+// A single <Hardware> block may contain multiple <Product> entries (variants that share
+// one application program). We collect every product and emit one HwInfo per product.
 static QList<HwInfo> parseHardwareXml(const QByteArray &xml)
 {
     QList<HwInfo> results;
     QString manufacturer;
-    HwInfo current;
     QString currentHwName;
+    QString currentAppRef;
+    QList<QPair<QString, QString>> currentProducts; // (Id, Text) within current <Hardware>
 
     QXmlStreamReader rd(xml);
     while (!rd.atEnd()) {
         const auto token = rd.readNext();
 
         if (token == QXmlStreamReader::EndElement) {
-            // Commit product entry when leaving a Hardware block that has a product
-            if (rd.name() == QLatin1String("Hardware") && !current.productId.isEmpty()) {
-                current.manufacturer = manufacturer;
-                if (current.productName.isEmpty())
-                    current.productName = currentHwName;
-                results.append(current);
-                current = {};
+            if (rd.name() == QLatin1String("Hardware")) {
+                // Commit one HwInfo per product in this hardware block.
+                for (const auto &[productId, productText] : currentProducts) {
+                    if (productId.isEmpty() || currentAppRef.isEmpty())
+                        continue;
+                    HwInfo hw;
+                    hw.productId       = productId;
+                    hw.productName     = productText.isEmpty() ? currentHwName : productText;
+                    hw.manufacturer    = manufacturer;
+                    hw.appProgramRefId = currentAppRef;
+                    results.append(hw);
+                }
+                currentProducts.clear();
+                currentAppRef.clear();
                 currentHwName.clear();
             }
             continue;
@@ -49,25 +58,24 @@ static QList<HwInfo> parseHardwareXml(const QByteArray &xml)
             manufacturer = rd.attributes().value(QLatin1String("RefId")).toString();
 
         } else if (n == QLatin1String("Hardware")) {
-            const QString hwId = rd.attributes().value(QLatin1String("Id")).toString();
-            if (!hwId.isEmpty())
-                currentHwName = rd.attributes().value(QLatin1String("Name")).toString();
+            currentHwName = rd.attributes().value(QLatin1String("Name")).toString();
 
         } else if (n == QLatin1String("Product")) {
-            current.productId = rd.attributes().value(QLatin1String("Id")).toString();
-            if (current.productName.isEmpty())
-                current.productName = rd.attributes().value(QLatin1String("Text")).toString();
+            currentProducts.append({
+                rd.attributes().value(QLatin1String("Id")).toString(),
+                rd.attributes().value(QLatin1String("Text")).toString()
+            });
 
         } else if (n == QLatin1String("ApplicationProgramRef")) {
             const QString ref = rd.attributes().value(QLatin1String("RefId")).toString();
             if (!ref.isEmpty())
-                current.appProgramRefId = ref;
+                currentAppRef = ref;
 
         } else if (n == QLatin1String("Hardware2ProgrammeVersion")) {
-            // ETS6 standard manufacturer format
+            // ETS6 standard format (nested inside Hardware2Program)
             const QString ref = rd.attributes().value(QLatin1String("ApplicationProgramRefId")).toString();
             if (!ref.isEmpty())
-                current.appProgramRefId = ref;
+                currentAppRef = ref;
         }
     }
     return results;

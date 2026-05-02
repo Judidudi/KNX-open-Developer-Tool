@@ -300,8 +300,19 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath, QStrin
         return nullptr;
     }
 
-    // 1. Read project ID from root 0.xml
-    const QByteArray rootXml = entries.value(QStringLiteral("0.xml"));
+    // 1. Read project ID from root 0.xml.
+    //    ETS 4 projects have no root 0.xml; instead metadata lives in P-*/Project.xml.
+    QByteArray rootXml = entries.value(QStringLiteral("0.xml"));
+    if (rootXml.isEmpty()) {
+        for (auto it = entries.constBegin(); it != entries.constEnd(); ++it) {
+            const QString &k = it.key();
+            if (k.startsWith(QLatin1String("P-")) && k.endsWith(QLatin1String("/Project.xml"))) {
+                rootXml = it.value();
+                qWarning().noquote() << "KnxprojSerializer: no root 0.xml – using" << k << "(ETS 4 format)";
+                break;
+            }
+        }
+    }
     if (rootXml.isEmpty()) {
         setErr(errorOut,
                QObject::tr("Im Archiv fehlt die Datei 0.xml (gefundene Einträge: %1).")
@@ -437,12 +448,19 @@ std::unique_ptr<Project> KnxprojSerializer::load(const QString &filePath, QStrin
             const int devAddr = attrs.value(QLatin1String("Address")).toInt();
             const QString physAddr = QStringLiteral("%1.%2.%3").arg(areaAddr).arg(lineAddr).arg(devAddr);
 
+            // AppProgramRefId is our own attribute (ETS 5/6 projects use Hardware2ProgramRefId).
+            const QString appRef = !attrs.value(QLatin1String("AppProgramRefId")).isEmpty()
+                ? attrs.value(QLatin1String("AppProgramRefId")).toString()
+                : attrs.value(QLatin1String("Hardware2ProgramRefId")).toString();
+
             auto dev = std::make_unique<DeviceInstance>(
                 devId,
                 attrs.value(QLatin1String("ProductRefId")).toString(),
-                attrs.value(QLatin1String("AppProgramRefId")).toString());
+                appRef);
             dev->setPhysicalAddress(physAddr);
-            dev->setDescription(attrs.value(QLatin1String("Description")).toString());
+            dev->setDescription(attrs.value(QLatin1String("Name")).toString().isEmpty()
+                                ? attrs.value(QLatin1String("Description")).toString()
+                                : attrs.value(QLatin1String("Name")).toString());
             currentDev = dev.get();
             currentLine->addDevice(std::move(dev));
 
