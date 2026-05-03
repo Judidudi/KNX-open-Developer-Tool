@@ -78,12 +78,14 @@ private slots:
     void onAddBuildingChildRequested(BuildingPart *parent, BuildingPart::Type childType);
     void onDeleteBuildingPartRequested(BuildingPart *bp);
 
+private slots:
+    void startCatalogLoad();
+
 private:
     void setupMenuBar();
     void setupToolBar();
     void setupCentralWidget();
     void setupStatusBar();
-    void loadCatalog();
     void updateWindowTitle();
     void markModified();
     bool maybeSave();

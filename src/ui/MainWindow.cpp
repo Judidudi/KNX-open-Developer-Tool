@@ -51,6 +51,7 @@
 #include <QSettings>
 #include <QFileInfo>
 #include <QCoreApplication>
+#include <QThread>
 #include <QTimer>
 
 MainWindow::MainWindow(QWidget *parent)
@@ -66,10 +67,8 @@ MainWindow::MainWindow(QWidget *parent)
     setupToolBar();
     setupStatusBar();
 
-    loadCatalog();
-
     m_projectTree->setProject(m_project.get());
-    m_projectTree->setCatalog(m_catalog.get());
+    m_projectTree->setCatalog(m_catalog.get());  // empty catalog initially
     m_busMonitor->setInterfaceManager(m_interfaces.get());
     m_busMonitor->setProject(m_project.get());
     m_groupMonitor->setInterfaceManager(m_interfaces.get());
@@ -89,8 +88,10 @@ MainWindow::MainWindow(QWidget *parent)
     updateWindowTitle();
     resize(1280, 800);
 
-    // Startup actions based on saved settings (deferred to after window is shown)
+    // Deferred startup: start catalog load and (optionally) open last project
+    // after the window is shown so the UI is never blank while loading.
     QTimer::singleShot(0, this, [this]() {
+        startCatalogLoad();
         const QSettings s;
         if (s.value(QStringLiteral("project/openLastOnStart"), false).toBool()) {
             const QStringList recent = s.value(QStringLiteral("recentFiles")).toStringList();
@@ -102,7 +103,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow() = default;
 
-void MainWindow::loadCatalog()
+void MainWindow::startCatalogLoad()
 {
     const QDir appDir(QCoreApplication::applicationDirPath());
     m_writableCatalogPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
@@ -117,12 +118,30 @@ void MainWindow::loadCatalog()
                 << appDir.absoluteFilePath(QStringLiteral("../../catalog/devices"))
                 << m_writableCatalogPath;
 
+    // Create a fresh catalog exclusively for the background thread.
+    // The main thread's m_catalog stays empty (but valid) until loading is done.
+    auto *fresh = new KnxprodCatalog;
     for (const QString &path : searchPaths) {
         QDir().mkpath(path);
-        m_catalog->addSearchPath(path);
+        fresh->addSearchPath(path);
     }
 
-    m_catalog->reload();
+    statusBar()->showMessage(tr("Lade Katalog…"));
+
+    auto *thread = QThread::create([fresh]() { fresh->reload(); });
+    connect(thread, &QThread::finished, this, [this, fresh, thread]() {
+        thread->deleteLater();
+        m_projectTree->setCatalog(nullptr);  // detach model before swap
+        m_catalog.reset(fresh);
+        m_projectTree->setCatalog(m_catalog.get());
+        if (m_catalog->count() > 0)
+            statusBar()->showMessage(tr("Katalog: %1 Produkt(e)").arg(m_catalog->count()));
+        else
+            statusBar()->showMessage(tr("Kein Katalog – .knxprod-Datei in catalog/devices/ ablegen"));
+        if (!m_catalog->lastErrors().isEmpty())
+            qWarning() << "Catalog load errors:" << m_catalog->lastErrors();
+    });
+    thread->start();
 }
 
 void MainWindow::setupMenuBar()
@@ -366,30 +385,41 @@ void MainWindow::openProject()
     if (path.isEmpty())
         return;
 
-    QString loadError;
-    auto loaded = KnxprojSerializer::load(path, &loadError);
-    if (!loaded) {
-        QMessageBox::critical(this, tr("Projekt konnte nicht geöffnet werden"),
-            tr("Datei: %1\n\n%2")
-                .arg(path,
-                     loadError.isEmpty() ? tr("Unbekannter Fehler.") : loadError));
-        return;
-    }
+    statusBar()->showMessage(tr("Öffne %1…").arg(QFileInfo(path).fileName()));
+    QApplication::setOverrideCursor(Qt::WaitCursor);
 
-    m_project = std::move(loaded);
-    m_currentFilePath = path;
-    m_modified = false;
-    m_undoStack->clear();
-
-    m_projectTree->setProject(m_project.get());
-    m_busMonitor->setProject(m_project.get());
-    m_groupMonitor->setProject(m_project.get());
-    m_propertiesPanel->setProject(m_project.get());
-    m_deviceEditor->clearDevice();
-    m_propertiesPanel->clearSelection();
-    addToRecentFiles(path);
-    updateWindowTitle();
-    statusBar()->showMessage(tr("Projekt geladen: %1").arg(path));
+    struct LoadResult { std::unique_ptr<Project> project; QString error; };
+    auto *res = new LoadResult;
+    auto *thread = QThread::create([path, res]() {
+        res->project = KnxprojSerializer::load(path, &res->error);
+    });
+    connect(thread, &QThread::finished, this, [this, path, res, thread]() {
+        thread->deleteLater();
+        QApplication::restoreOverrideCursor();
+        auto loaded  = std::move(res->project);
+        const QString err = res->error;
+        delete res;
+        if (!loaded) {
+            statusBar()->showMessage(tr("Ladefehler: %1").arg(QFileInfo(path).fileName()));
+            QMessageBox::critical(this, tr("Projekt konnte nicht geöffnet werden"),
+                tr("Datei: %1\n\n%2").arg(path, err.isEmpty() ? tr("Unbekannter Fehler.") : err));
+            return;
+        }
+        m_project = std::move(loaded);
+        m_currentFilePath = path;
+        m_modified = false;
+        m_undoStack->clear();
+        m_projectTree->setProject(m_project.get());
+        m_busMonitor->setProject(m_project.get());
+        m_groupMonitor->setProject(m_project.get());
+        m_propertiesPanel->setProject(m_project.get());
+        m_deviceEditor->clearDevice();
+        m_propertiesPanel->clearSelection();
+        addToRecentFiles(path);
+        updateWindowTitle();
+        statusBar()->showMessage(tr("Projekt geladen: %1").arg(path));
+    });
+    thread->start();
 }
 
 void MainWindow::saveProject()

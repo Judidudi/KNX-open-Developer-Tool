@@ -13,6 +13,8 @@
 #include <QHBoxLayout>
 #include <QFormLayout>
 #include <QLabel>
+#include <QListWidget>
+#include <QSplitter>
 #include <QTabWidget>
 #include <QCheckBox>
 #include <QSpinBox>
@@ -36,17 +38,31 @@ DeviceEditorWidget::DeviceEditorWidget(QWidget *parent)
     m_tabs = new QTabWidget(this);
     layout->addWidget(m_tabs);
 
-    // Parameter tab: wrap in a QScrollArea so visibility rebuilds don't change window size
-    m_paramTab = new QWidget(this);
+    // Parameter tab: block selector (left) + scroll area (right) in a splitter
+    m_paramTab    = new QWidget(this);
     m_paramLayout = new QFormLayout(m_paramTab);
-    auto *paramScroll = new QScrollArea(m_tabs);
-    paramScroll->setWidgetResizable(true);
-    paramScroll->setWidget(m_paramTab);
+    m_paramScroll = new QScrollArea;
+    m_paramScroll->setWidgetResizable(true);
+    m_paramScroll->setWidget(m_paramTab);
+
+    m_blockList = new QListWidget;
+    m_blockList->setMinimumWidth(70);
+    m_blockList->setMaximumWidth(180);
+    m_blockList->setVisible(false); // hidden until a device with blocks is loaded
+
+    m_paramSplitter = new QSplitter(Qt::Horizontal);
+    m_paramSplitter->addWidget(m_blockList);
+    m_paramSplitter->addWidget(m_paramScroll);
+    m_paramSplitter->setStretchFactor(0, 0);
+    m_paramSplitter->setStretchFactor(1, 1);
+    m_paramSplitter->setSizes({150, 400});
+    connect(m_blockList, &QListWidget::currentRowChanged,
+            this, [this](int) { rebuildParameterTab(); });
 
     auto *paramTabContainer = new QWidget(m_tabs);
     auto *paramTabLayout    = new QVBoxLayout(paramTabContainer);
     paramTabLayout->setContentsMargins(0, 0, 0, 0);
-    paramTabLayout->addWidget(paramScroll);
+    paramTabLayout->addWidget(m_paramSplitter);
 
     auto *readRow = new QHBoxLayout;
     m_readBtn = new QPushButton(tr("Vom Gerät lesen"), paramTabContainer);
@@ -124,6 +140,8 @@ void DeviceEditorWidget::setDevice(DeviceInstance *device, Project *project)
 void DeviceEditorWidget::clearTabs()
 {
     m_paramWidgets.clear();
+    m_blockList->clear();
+    m_blockList->setVisible(false);
 
     // Drain parameter form layout
     while (m_paramLayout->count() > 0) {
@@ -158,9 +176,29 @@ void DeviceEditorWidget::buildParameterTab()
     m_updating = true;
     const KnxApplicationProgram *app = m_device->appProgram();
 
+    // Populate block list only on first call per device (block list is empty after clearTabs)
+    if (m_blockList->count() == 0) {
+        const bool hasBlocks = !app->paramBlocks.isEmpty();
+        if (hasBlocks) {
+            m_blockList->addItem(tr("(Alle)"));
+            for (const KnxParameterBlock &b : app->paramBlocks)
+                if (!b.displayText.isEmpty())
+                    m_blockList->addItem(b.displayText);
+            m_blockList->setCurrentRow(0);
+        }
+        m_blockList->setVisible(hasBlocks);
+    }
+
+    // Determine active block filter
+    const QListWidgetItem *blockItem = m_blockList->currentItem();
+    const QString selectedBlock = blockItem ? blockItem->text() : QString{};
+    const bool showAll = selectedBlock.isEmpty() || selectedBlock == tr("(Alle)");
+
     int visibleCount = 0;
     for (const KnxParameter &p : app->parameters) {
         if (!isParameterVisible(p))
+            continue;
+        if (!showAll && p.groupName != selectedBlock)
             continue;
 
         ++visibleCount;
@@ -204,20 +242,17 @@ void DeviceEditorWidget::buildParameterTab()
     }
 
     if (visibleCount == 0)
-        m_paramLayout->addRow(new QLabel(tr("Dieses Gerät hat keine sichtbaren Parameter."), m_paramTab));
+        m_paramLayout->addRow(new QLabel(
+            showAll ? tr("Dieses Gerät hat keine sichtbaren Parameter.")
+                    : tr("Keine Parameter in diesem Abschnitt."), m_paramTab));
 
     m_updating = false;
 }
 
 void DeviceEditorWidget::rebuildParameterTab()
 {
-    // Preserve scroll position across rebuild
-    QScrollArea *scroll = nullptr;
-    for (int i = 0; i < m_tabs->count(); ++i) {
-        if ((scroll = qobject_cast<QScrollArea *>(m_tabs->widget(i))))
-            break;
-    }
-    const int scrollValue = scroll ? scroll->verticalScrollBar()->value() : 0;
+    // Preserve scroll position; block list selection is NOT cleared (intentional)
+    const int scrollValue = m_paramScroll ? m_paramScroll->verticalScrollBar()->value() : 0;
 
     m_paramWidgets.clear();
     while (m_paramLayout->count() > 0) {
@@ -229,8 +264,8 @@ void DeviceEditorWidget::rebuildParameterTab()
 
     buildParameterTab();
 
-    if (scroll)
-        scroll->verticalScrollBar()->setValue(scrollValue);
+    if (m_paramScroll)
+        m_paramScroll->verticalScrollBar()->setValue(scrollValue);
 }
 
 void DeviceEditorWidget::buildComObjectTab()
@@ -244,7 +279,15 @@ void DeviceEditorWidget::buildComObjectTab()
         const KnxComObject &co = app->comObjects[row];
 
         m_comObjTable->setItem(row, 0, new QTableWidgetItem(co.name));
-        m_comObjTable->setItem(row, 1, new QTableWidgetItem(co.dpt));
+        // DPT: combo if multiple options, plain text if only one
+        if (co.supportedDpts.size() > 1) {
+            auto *dptCombo = new QComboBox(m_comObjTable);
+            dptCombo->addItems(co.supportedDpts);
+            dptCombo->setCurrentText(co.dpt.isEmpty() ? co.supportedDpts.first() : co.dpt);
+            m_comObjTable->setCellWidget(row, 1, dptCombo);
+        } else {
+            m_comObjTable->setItem(row, 1, new QTableWidgetItem(co.dpt));
+        }
         m_comObjTable->setItem(row, 2, new QTableWidgetItem(co.flags.join(QString())));
 
         // Find currently linked state for this ComObject
@@ -272,8 +315,10 @@ void DeviceEditorWidget::buildComObjectTab()
         gaCombo->addItem(tr("(keine)"), QString());
         if (m_project) {
             for (const GroupAddress &ga : m_project->groupAddresses()) {
-                if (!ga.dpt().isEmpty() && ga.dpt() != co.dpt)
-                    continue;  // filter by matching DPT
+                // Accept GA if its DPT matches any supported DPT (or if either is unset)
+                if (!ga.dpt().isEmpty() && !co.supportedDpts.isEmpty()
+                        && !co.supportedDpts.contains(ga.dpt()) && ga.dpt() != co.dpt)
+                    continue;
                 gaCombo->addItem(QStringLiteral("%1 – %2").arg(ga.toString(), ga.name()),
                                  ga.toString());
             }
