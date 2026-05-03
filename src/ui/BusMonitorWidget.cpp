@@ -289,6 +289,13 @@ void BusMonitorWidget::setInterfaceManager(InterfaceManager *mgr)
     }
 }
 
+void BusMonitorWidget::applySettings()
+{
+    QSettings s;
+    const int maxE = s.value(QStringLiteral("busMonitor/maxEntries"), 2000).toInt();
+    m_model->setMaxEntries(maxE);
+}
+
 // ─── Slots ────────────────────────────────────────────────────────────────────
 
 void BusMonitorWidget::onCemiReceived(const QByteArray &cemi)

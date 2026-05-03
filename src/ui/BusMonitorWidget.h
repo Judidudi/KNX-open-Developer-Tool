@@ -29,6 +29,7 @@ public:
 
     void setInterfaceManager(InterfaceManager *mgr);
     void setProject(Project *project);
+    void applySettings();
 
 private slots:
     void onCemiReceived(const QByteArray &cemi);

@@ -71,6 +71,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_projectTree->setCatalog(m_catalog.get());  // empty catalog initially
     m_busMonitor->setInterfaceManager(m_interfaces.get());
     m_busMonitor->setProject(m_project.get());
+    m_busMonitor->applySettings();
     m_groupMonitor->setInterfaceManager(m_interfaces.get());
     m_groupMonitor->setProject(m_project.get());
     m_propertiesPanel->setProject(m_project.get());
@@ -197,7 +198,8 @@ void MainWindow::setupMenuBar()
     QMenu *extrasMenu = menuBar()->addMenu(tr("&Extras"));
     extrasMenu->addAction(tr("&Einstellungen…"), this, [this](){
         SettingsDialog dlg(this);
-        dlg.exec();
+        if (dlg.exec() == QDialog::Accepted)
+            m_busMonitor->applySettings();
     });
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Hilfe"));
