@@ -8,6 +8,7 @@ class Project;
 class DeviceInstance;
 class KnxApplicationProgram;
 class InterfaceManager;
+class DeviceDiagnosticWidget;
 
 class QTabWidget;
 class QFormLayout;
@@ -61,6 +62,7 @@ private:
     QSplitter    *m_paramSplitter = nullptr;
     QTableWidget *m_comObjTable  = nullptr;
     QPushButton  *m_readBtn      = nullptr;
+    DeviceDiagnosticWidget *m_diagTab = nullptr;
 
     // Maps parameter id → widget for value read-back
     QHash<QString, QWidget *> m_paramWidgets;

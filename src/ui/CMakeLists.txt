@@ -11,6 +11,8 @@ add_library(knxodt_ui STATIC
     CatalogModel.cpp
     DeviceEditorWidget.h
     DeviceEditorWidget.cpp
+    DeviceDiagnosticWidget.h
+    DeviceDiagnosticWidget.cpp
     BusMonitorWidget.h
     BusMonitorWidget.cpp
     BusMonitorModel.h

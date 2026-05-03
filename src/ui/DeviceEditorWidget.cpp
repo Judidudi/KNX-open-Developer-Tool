@@ -1,4 +1,5 @@
 #include "DeviceEditorWidget.h"
+#include "DeviceDiagnosticWidget.h"
 
 #include "Project.h"
 #include "DeviceInstance.h"
@@ -87,6 +88,9 @@ DeviceEditorWidget::DeviceEditorWidget(QWidget *parent)
     m_comObjTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     comLayout->addWidget(m_comObjTable);
 
+    m_diagTab = new DeviceDiagnosticWidget(m_tabs);
+    m_tabs->addTab(m_diagTab, tr("Diagnose"));
+
     m_tabs->setEnabled(false);
 }
 
@@ -102,6 +106,7 @@ void DeviceEditorWidget::setInterfaceManager(InterfaceManager *mgr)
         connect(m_iface, &InterfaceManager::cemiFrameReceived,
                 this, &DeviceEditorWidget::onCemiReceived);
     m_readBtn->setEnabled(m_iface && m_iface->isConnected() && m_device);
+    m_diagTab->setInterfaceManager(mgr);
 }
 
 void DeviceEditorWidget::clearDevice()
@@ -110,6 +115,7 @@ void DeviceEditorWidget::clearDevice()
     m_project = nullptr;
     m_title->setText(tr("Kein Gerät ausgewählt"));
     clearTabs();
+    m_diagTab->setDevice(nullptr);
     m_tabs->setEnabled(false);
     m_readBtn->setEnabled(false);
     m_readBuffer.clear();
@@ -133,6 +139,7 @@ void DeviceEditorWidget::setDevice(DeviceInstance *device, Project *project)
 
     buildParameterTab();
     buildComObjectTab();
+    m_diagTab->setDevice(device);
     m_tabs->setEnabled(true);
     m_readBtn->setEnabled(m_iface && m_iface->isConnected());
 }
