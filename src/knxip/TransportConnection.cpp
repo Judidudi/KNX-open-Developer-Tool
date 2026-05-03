@@ -5,7 +5,7 @@
 
 #include <QTimer>
 
-static constexpr int kDefaultAckTimeoutMs = 3000;   // KNX spec: T_Data_Connected ACK ≤ 3s
+static constexpr int kDefaultAckTimeoutMs = 6000;   // USB tunnels often exceed 3s KNX spec RTT
 
 TransportConnection::TransportConnection(IKnxInterface *iface, QObject *parent)
     : QObject(parent)

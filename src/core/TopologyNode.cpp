@@ -66,12 +66,12 @@ int TopologyNode::childCount() const
 int TopologyNode::indexInParent() const
 {
     if (!m_parent)
-        return 0;
+        return -1;
     for (int i = 0; i < m_parent->childCount(); ++i) {
         if (m_parent->childAt(i) == this)
             return i;
     }
-    return 0;
+    return -1;
 }
 
 void TopologyNode::addDevice(std::unique_ptr<DeviceInstance> device)

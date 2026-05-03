@@ -289,9 +289,9 @@ private slots:
         QVERIFY(doneSpy.at(0).at(1).toString().contains(QStringLiteral("Verifikation")));
     }
 
-    void verifyTimeoutIsNonFatal()
+    void verifyTimeoutIsFatal()
     {
-        // No memory response injected → verify times out → programming still succeeds
+        // No memory response injected → verify times out → programming fails
         MockInterface iface;
         KnxApplicationProgram app = makeApp();
         DeviceInstance dev        = makeDevice(app);
@@ -305,10 +305,11 @@ private slots:
 
         QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
         prog.start();
-        // ~10ms prog + 400ms PA settle + ~0ms transport steps + 2000ms verify timeout ≈ 2.5s
-        QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 8000);
+        // ~10ms prog + 400ms PA settle + ~0ms transport steps + 3000ms verify timeout ≈ 3.5s
+        QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 10000);
 
-        QCOMPARE(doneSpy.at(0).at(0).toBool(), true);
+        QCOMPARE(doneSpy.at(0).at(0).toBool(), false);
+        QVERIFY(doneSpy.at(0).at(1).toString().contains(QStringLiteral("Verifikation")));
     }
 
     void cancelStopsProgramming()
@@ -350,6 +351,7 @@ private slots:
         MockInterface iface;
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
+        prog.setVerifyEnabled(false);   // test is about chunking, not verify
 
         QTimer::singleShot(5, [&]() {
             iface.injectProgModeResponse(QStringLiteral("1.1.1"));
@@ -357,8 +359,8 @@ private slots:
 
         QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
         prog.start();
-        // Verify times out (no injection) → non-fatal → finishes in ~2.5s
-        QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 10000);
+        // 3 param chunks + addr/assoc tables → done without verify
+        QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 8000);
 
         QCOMPARE(doneSpy.at(0).at(0).toBool(), true);
 
@@ -385,6 +387,7 @@ private slots:
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
         prog.setLoadStateMachineEnabled(false);
+        prog.setVerifyEnabled(false);   // test is about load-state, not verify
 
         QTimer::singleShot(5, [&]() {
             iface.injectProgModeResponse(QStringLiteral("1.1.1"));

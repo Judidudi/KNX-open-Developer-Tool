@@ -8,11 +8,15 @@ class Project;
 class DeviceInstance;
 class KnxApplicationProgram;
 class InterfaceManager;
+class DeviceDiagnosticWidget;
 
 class QTabWidget;
 class QFormLayout;
 class QLabel;
+class QListWidget;
 class QPushButton;
+class QSplitter;
+class QScrollArea;
 class QTableWidget;
 
 class DeviceEditorWidget : public QWidget
@@ -48,13 +52,17 @@ private:
     DeviceInstance   *m_device  = nullptr;
     InterfaceManager *m_iface   = nullptr;
 
-    QLabel      *m_title        = nullptr;
-    QTabWidget  *m_tabs         = nullptr;
-    QWidget     *m_paramTab     = nullptr;
-    QWidget     *m_comObjTab    = nullptr;
-    QFormLayout *m_paramLayout  = nullptr;
-    QTableWidget *m_comObjTable = nullptr;
-    QPushButton  *m_readBtn     = nullptr;
+    QLabel       *m_title        = nullptr;
+    QTabWidget   *m_tabs         = nullptr;
+    QWidget      *m_paramTab     = nullptr;
+    QWidget      *m_comObjTab    = nullptr;
+    QFormLayout  *m_paramLayout  = nullptr;
+    QScrollArea  *m_paramScroll  = nullptr;
+    QListWidget  *m_blockList    = nullptr;   // ParameterBlock page selector
+    QSplitter    *m_paramSplitter = nullptr;
+    QTableWidget *m_comObjTable  = nullptr;
+    QPushButton  *m_readBtn      = nullptr;
+    DeviceDiagnosticWidget *m_diagTab = nullptr;
 
     // Maps parameter id → widget for value read-back
     QHash<QString, QWidget *> m_paramWidgets;

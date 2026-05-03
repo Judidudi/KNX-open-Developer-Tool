@@ -147,18 +147,34 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
     bool inPT = false;
     quint32 bestSegSize = 0;
 
-    QMap<QString, ParamRefInfo> paramRefs;    // key: ParameterRef.Id
-    QMap<QString, KnxComObject> coBase;       // key: ComObject.Id — base definitions
-    QList<KnxComObject> coFinal;              // merged ComObjectRef entries (ETS6 style)
+    QMap<QString, ParamRefInfo> paramRefs;      // key: ParameterRef.Id
+    QMap<QString, KnxComObject> coBase;         // key: ComObject.Id — base definitions
+    QMap<int, KnxComObject>     coDedupByNum;   // key: CO.number — one entry per physical CO
+
+    // ParameterBlock tracking
+    QStringList              blockTextStack;    // stack of current block display texts
+    QMap<QString, QString>   refRefToBlock;     // ParameterRefRef.RefId → block display text
+    KnxParameterBlock        currentBlock;
+    bool                     inBlock = false;
 
     while (!rd.atEnd()) {
         const auto token = rd.readNext();
         if (token == QXmlStreamReader::EndElement) {
             const QStringView n = rd.name();
             if (n == QLatin1String("Static") ||
-                n == QLatin1String("ParameterBlock") ||
                 n == QLatin1String("ChannelIndependentBlock")) {
                 if (insideParamContext > 0) --insideParamContext;
+            } else if (n == QLatin1String("ParameterBlock")) {
+                if (insideParamContext > 0) --insideParamContext;
+                // Commit block on close
+                if (inBlock) {
+                    if (!currentBlock.displayText.isEmpty())
+                        prog->paramBlocks.append(currentBlock);
+                    inBlock = false;
+                    currentBlock = {};
+                }
+                if (!blockTextStack.isEmpty())
+                    blockTextStack.removeLast();
             }
             if (n == QLatin1String("ParameterType") && inPT) {
                 prog->paramTypes.insert(currentPT.id, currentPT);
@@ -179,9 +195,29 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
             prog->manufacturer = rd.attributes().value(QLatin1String("RefId")).toString();
 
         } else if (n == QLatin1String("Static") ||
-                   n == QLatin1String("ParameterBlock") ||
                    n == QLatin1String("ChannelIndependentBlock")) {
             ++insideParamContext;
+
+        } else if (n == QLatin1String("ParameterBlock")) {
+            ++insideParamContext;
+            const QString text = rd.attributes().value(QLatin1String("Text")).toString();
+            const QString blockText = text.isEmpty()
+                ? rd.attributes().value(QLatin1String("Name")).toString() : text;
+            blockTextStack.append(blockText);
+            // Only top-level blocks become pages in the UI (first level only)
+            if (blockTextStack.size() == 1) {
+                currentBlock = {};
+                currentBlock.id          = rd.attributes().value(QLatin1String("Id")).toString();
+                currentBlock.displayText = blockText;
+                inBlock = true;
+            }
+
+        } else if (n == QLatin1String("ParameterRefRef") && inBlock) {
+            const QString rrid = rd.attributes().value(QLatin1String("RefId")).toString();
+            if (!rrid.isEmpty()) {
+                refRefToBlock.insert(rrid, blockTextStack.first()); // map to top-level block
+                currentBlock.paramRefRefIds.append(rrid);
+            }
 
         } else if (n == QLatin1String("AbsoluteSegment") && insideParamContext > 0) {
             bool addrOk = false, szOk = false;
@@ -298,28 +334,34 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
                 coBase.insert(co.id, co);
 
         } else if (n == QLatin1String("ComObjectRef")) {
-            // ETS6 style: ComObjectRef provides display name / DPT / flag overrides.
+            // ETS6 style: deduplicate by base CO number — one entry per physical object.
+            // Multiple refs for the same CO (different DPTs) are merged into supportedDpts.
             const QString refId = rd.attributes().value(QLatin1String("RefId")).toString();
 
-            // Start from the base ComObject; if not found, create a shell with refId as id.
-            KnxComObject co = coBase.value(refId);
-            if (co.id.isEmpty())
-                co.id = refId;
+            KnxComObject base = coBase.value(refId);
+            if (base.id.isEmpty()) base.id = refId;
 
-            const QString nameOverride = rd.attributes().value(QLatin1String("Name")).toString();
-            if (!nameOverride.isEmpty())
-                co.name = nameOverride;
+            const QString dptOverride = normalizeDpt(
+                rd.attributes().value(QLatin1String("DatapointType")).toString());
 
-            const QString dptOverride = normalizeDpt(rd.attributes().value(QLatin1String("DatapointType")).toString());
-            if (!dptOverride.isEmpty())
-                co.dpt = dptOverride;
-
-            bool hadFlags = false;
-            const QStringList flagOverride = parseFlagAttributes(rd.attributes(), hadFlags);
-            if (hadFlags)
-                co.flags = flagOverride;
-
-            coFinal.append(co);
+            auto &entry = coDedupByNum[base.number];
+            if (entry.id.isEmpty()) {
+                // First ref for this CO number: initialise entry
+                entry = base;
+                const QString nameOverride = rd.attributes().value(QLatin1String("Name")).toString();
+                if (!nameOverride.isEmpty()) entry.name = nameOverride;
+                bool hadFlags = false;
+                const QStringList fo = parseFlagAttributes(rd.attributes(), hadFlags);
+                if (hadFlags) entry.flags = fo;
+                if (!dptOverride.isEmpty()) {
+                    entry.dpt = dptOverride;
+                    entry.supportedDpts.append(dptOverride);
+                }
+            } else {
+                // Additional ref: only add new DPT variants
+                if (!dptOverride.isEmpty() && !entry.supportedDpts.contains(dptOverride))
+                    entry.supportedDpts.append(dptOverride);
+            }
         }
     }
 
@@ -346,11 +388,26 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
         }
     }
 
+    // Apply ParameterBlock group names to parameters.
+    // refRefToBlock maps ParameterRefRef.RefId → block displayText.
+    // ParameterRefRef.RefId == ParameterRef.Id, and paramRefs maps ParameterRef.Id → ParamRefInfo.
+    // So: iterate paramRefs, look up block text, store on the parameter.
+    for (auto it = paramRefs.constBegin(); it != paramRefs.constEnd(); ++it) {
+        const QString blockText = refRefToBlock.value(it.key());
+        if (blockText.isEmpty())
+            continue;
+        // it.value().paramId is the Parameter.Id
+        for (KnxParameter &p : prog->parameters) {
+            if (p.id == it.value().paramId && p.groupName.isEmpty())
+                p.groupName = blockText;
+        }
+    }
+
     // Finalize ComObjects:
-    // - If ComObjectRef entries were found, use them (ETS6 manufacturer format).
-    // - Otherwise use the base ComObject list sorted by number (our own format + some manufacturers).
-    if (!coFinal.isEmpty()) {
-        prog->comObjects = coFinal;
+    // - If deduplicated entries exist (ETS6 manufacturer format), use them.
+    // - Otherwise fall back to base ComObject list sorted by number.
+    if (!coDedupByNum.isEmpty()) {
+        prog->comObjects = coDedupByNum.values(); // QMap is sorted by key (number)
     } else {
         auto baseList = coBase.values();
         std::sort(baseList.begin(), baseList.end(), [](const KnxComObject &a, const KnxComObject &b) {

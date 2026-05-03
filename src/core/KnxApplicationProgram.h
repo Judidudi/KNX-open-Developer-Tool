@@ -46,6 +46,9 @@ struct KnxParameter {
     QVariant    conditionValue;
     enum class ConditionOp { Equal, NotEqual };
     ConditionOp conditionOp = ConditionOp::Equal;
+
+    // ParameterBlock grouping (from <ParameterBlock Text="…"> in .knxprod)
+    QString groupName;
 };
 
 // ─── Communication object ─────────────────────────────────────────────────────
@@ -54,8 +57,9 @@ struct KnxComObject {
     QString     id;
     int         number = 0;
     QString     name;
-    QString     dpt;           // e.g. "DPT-1" or "1.001"
-    QStringList flags;         // C, R, W, T, U
+    QString     dpt;            // active/primary DPT, e.g. "1.001"
+    QStringList supportedDpts;  // all DPTs this CO can operate with (multi-DPT devices)
+    QStringList flags;          // C, R, W, T, U
 };
 
 // ─── Memory layout ────────────────────────────────────────────────────────────
@@ -66,6 +70,16 @@ struct KnxMemoryLayout {
     uint32_t comObjectTable   = 0x4200;
     uint32_t parameterBase    = 0x4400;
     uint32_t parameterSize    = 0;
+};
+
+// ─── Parameter block ──────────────────────────────────────────────────────────
+
+// Named group of parameters (corresponds to a <ParameterBlock> in .knxprod).
+// Used by the UI to show parameter pages (like ETS's tab/page selector).
+struct KnxParameterBlock {
+    QString id;
+    QString displayText;         // e.g. "General settings", "LED 1"
+    QStringList paramRefRefIds;  // ParameterRefRef.RefId entries in this block
 };
 
 // ─── Application program ──────────────────────────────────────────────────────
@@ -82,6 +96,7 @@ public:
 
     QMap<QString, KnxParameterType> paramTypes;
     QList<KnxParameter>             parameters;
+    QList<KnxParameterBlock>        paramBlocks;  // named parameter groups
     QList<KnxComObject>             comObjects;
     KnxMemoryLayout                 memoryLayout;
 

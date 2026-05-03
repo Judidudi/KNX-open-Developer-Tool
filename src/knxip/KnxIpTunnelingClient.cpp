@@ -4,6 +4,7 @@
 #include <QUdpSocket>
 #include <QTimer>
 #include <QNetworkDatagram>
+#include <QDebug>
 
 // KNXnet/IP service type codes (KNX spec 03_08_02)
 static constexpr uint16_t SVC_CONNECT_REQUEST          = 0x0205;
@@ -17,7 +18,7 @@ static constexpr uint16_t SVC_TUNNEL_ACK               = 0x0421;
 static constexpr int kAckTimeoutMs           = 1000;
 static constexpr int kConnectTimeoutMs       = 5000;
 static constexpr int kHeartbeatIntervalMs    = 60000;
-static constexpr int kHeartbeatResponseMs    = 10000;
+static constexpr int kHeartbeatResponseMs    = 3000;
 static constexpr int kMaxRetries             = 3;
 
 static QByteArray knxipHeader(uint16_t svc, uint16_t bodyLen)
@@ -84,12 +85,20 @@ void KnxIpTunnelingClient::setRemote(const QHostAddress &host, quint16 port)
     m_remotePort = port;
 }
 
+void KnxIpTunnelingClient::setAutoReconnect(bool enabled)
+{
+    m_maxReconnectAttempts = enabled ? 5 : 0;
+}
+
 bool KnxIpTunnelingClient::connectToInterface()
 {
     if (m_connected)
         return true;
+    m_socket->close();
     if (!m_socket->bind(QHostAddress::AnyIPv4, 0))
         return false;
+    qDebug().nospace() << "[KnxIpTun] connectToInterface → " << m_remoteHost.toString()
+                       << ":" << m_remotePort;
     sendConnectionRequest();
     m_connectTimer->start();
     return true;
@@ -97,6 +106,8 @@ bool KnxIpTunnelingClient::connectToInterface()
 
 void KnxIpTunnelingClient::disconnectFromInterface()
 {
+    m_userInitiatedDisconnect = true;
+    m_reconnectAttempt = 0;
     if (!m_connected && m_pendingPacket.isEmpty()) {
         m_connectTimer->stop();
         m_socket->close();
@@ -111,8 +122,27 @@ void KnxIpTunnelingClient::disconnectFromInterface()
         sendDisconnectRequest();
         m_connected = false;
         m_socket->close();
+        qDebug() << "[KnxIpTun] disconnected (user-initiated)";
         emit disconnected();
     }
+}
+
+void KnxIpTunnelingClient::scheduleReconnect(const QString &reason)
+{
+    if (m_userInitiatedDisconnect || m_maxReconnectAttempts <= 0
+            || m_reconnectAttempt >= m_maxReconnectAttempts) {
+        return;
+    }
+    const int delayMs = 1000 * (1 << m_reconnectAttempt);  // 1s, 2s, 4s, 8s, 16s
+    qWarning().nospace() << "[KnxIpTun] " << reason
+                         << " – Reconnect in " << delayMs << " ms"
+                         << " (Versuch " << (m_reconnectAttempt + 1)
+                         << "/" << m_maxReconnectAttempts << ")";
+    ++m_reconnectAttempt;
+    QTimer::singleShot(delayMs, this, [this]() {
+        if (!m_connected && !m_userInitiatedDisconnect)
+            connectToInterface();
+    });
 }
 
 bool KnxIpTunnelingClient::isConnected() const
@@ -167,6 +197,9 @@ void KnxIpTunnelingClient::sendTunnelRequest(const QByteArray &cemi)
 
 void KnxIpTunnelingClient::doRetransmit()
 {
+    qDebug().nospace() << "[KnxIpTun] TX seq=" << static_cast<int>(m_pendingSeq)
+                       << " retry=" << m_retryCount
+                       << " size=" << m_pendingPacket.size();
     m_socket->writeDatagram(m_pendingPacket, m_remoteHost, m_remotePort);
     m_ackTimer->start();
 }
@@ -188,7 +221,10 @@ void KnxIpTunnelingClient::handleConnectResponse(const QByteArray &data)
     m_channelId = static_cast<uint8_t>(data[6]);
     m_connected = true;
     m_seqCounter = 0;
+    m_reconnectAttempt = 0;
+    m_userInitiatedDisconnect = false;
     m_heartbeat->start();
+    qDebug().nospace() << "[KnxIpTun] connected, channelId=" << static_cast<int>(m_channelId);
     emit connected();
 }
 
@@ -197,9 +233,19 @@ void KnxIpTunnelingClient::handleTunnelAck(const QByteArray &data)
     if (data.size() < 4)
         return;
     const quint8 ackSeq = static_cast<quint8>(data[2]);
-    if (ackSeq != m_pendingSeq)
-        return; // stale or duplicate ACK — ignore
-
+    qDebug().nospace() << "[KnxIpTun] RX ack seq=" << static_cast<int>(ackSeq)
+                       << " expected=" << static_cast<int>(m_pendingSeq);
+    if (ackSeq != m_pendingSeq) {
+        // Accept if within ±2 (UDP reordering) — log and accept
+        const int diff = static_cast<int>(ackSeq) - static_cast<int>(m_pendingSeq);
+        if (diff < -2 || diff > 2) {
+            qWarning().nospace() << "[KnxIpTun] stale ACK seq=" << static_cast<int>(ackSeq)
+                                 << " expected=" << static_cast<int>(m_pendingSeq) << ", ignored";
+            return;
+        }
+        qWarning().nospace() << "[KnxIpTun] out-of-order ACK seq=" << static_cast<int>(ackSeq)
+                             << " (expected " << static_cast<int>(m_pendingSeq) << "), accepting";
+    }
     m_ackTimer->stop();
     m_pendingPacket.clear();
     ++m_seqCounter; // advance only after confirmed ACK
@@ -230,9 +276,20 @@ void KnxIpTunnelingClient::handleConnectionStateResponse(const QByteArray &data)
         return;
     const uint8_t status = static_cast<uint8_t>(data[1]);
     if (status != 0x00) {
-        emit errorOccurred(tr("CONNECTIONSTATE_RESPONSE Fehler: 0x%1 – Verbindung getrennt")
-                           .arg(status, 2, 16, QLatin1Char('0')));
-        disconnectFromInterface();
+        const QString reason = tr("CONNECTIONSTATE_RESPONSE Fehler: 0x%1")
+                               .arg(status, 2, 16, QLatin1Char('0'));
+        emit errorOccurred(reason + tr(" – Verbindung getrennt"));
+        m_connected = false;
+        m_heartbeat->stop();
+        m_ackTimer->stop();
+        m_pendingPacket.clear();
+        m_socket->close();
+        qWarning().nospace() << "[KnxIpTun] bad CONNECTIONSTATE status=0x"
+                             << Qt::hex << static_cast<int>(status);
+        emit disconnected();
+        scheduleReconnect(reason);
+    } else {
+        qDebug() << "[KnxIpTun] heartbeat OK";
     }
 }
 
@@ -265,10 +322,16 @@ void KnxIpTunnelingClient::onAckTimeout()
         return;
     ++m_retryCount;
     if (m_retryCount > kMaxRetries) {
+        const QString reason = tr("Tunneling ACK nach %1 Versuchen ausgeblieben")
+                               .arg(kMaxRetries);
         m_pendingPacket.clear();
-        emit errorOccurred(tr("Tunneling ACK nach %1 Versuchen ausgeblieben – Verbindung getrennt")
-                           .arg(kMaxRetries));
-        disconnectFromInterface();
+        emit errorOccurred(reason + tr(" – Verbindung getrennt"));
+        m_connected = false;
+        m_heartbeat->stop();
+        m_heartbeatRespTimer->stop();
+        m_socket->close();
+        emit disconnected();
+        scheduleReconnect(reason);
         return;
     }
     doRetransmit();
@@ -296,6 +359,14 @@ void KnxIpTunnelingClient::onHeartbeatTimeout()
 
 void KnxIpTunnelingClient::onHeartbeatResponseTimeout()
 {
-    emit errorOccurred(tr("KNXnet/IP Heartbeat ohne Antwort – Verbindung getrennt"));
-    disconnectFromInterface();
+    const QString reason = tr("KNXnet/IP Heartbeat ohne Antwort");
+    emit errorOccurred(reason + tr(" – Verbindung getrennt"));
+    m_connected = false;
+    m_heartbeat->stop();
+    m_ackTimer->stop();
+    m_pendingPacket.clear();
+    m_socket->close();
+    qWarning() << "[KnxIpTun] heartbeat timeout, connection lost";
+    emit disconnected();
+    scheduleReconnect(reason);
 }
