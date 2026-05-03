@@ -12,7 +12,10 @@ class QTimer;
 // Reliability features:
 //  • TUNNEL_REQUEST is retransmitted up to 3× if no ACK arrives within 1 s.
 //  • CONNECTIONSTATE heartbeat is sent every 60 s; if the response is missing
-//    for 10 s the connection is declared dead and disconnected() is emitted.
+//    for 3 s the connection is declared dead.
+//  • Auto-reconnect with exponential backoff (1 s, 2 s, 4 s, 8 s, 16 s) when
+//    a connection is lost unexpectedly (not user-initiated disconnect).
+//    Configurable via setAutoReconnect(false) or setMaxReconnectAttempts(0).
 //  • A 5-second timeout on the initial CONNECT_RESPONSE emits errorOccurred()
 //    if the router does not answer.
 class KnxIpTunnelingClient : public IKnxInterface
@@ -23,6 +26,8 @@ public:
     ~KnxIpTunnelingClient() override;
 
     void setRemote(const QHostAddress &host, quint16 port = 3671);
+    void setAutoReconnect(bool enabled);
+    void setMaxReconnectAttempts(int n) { m_maxReconnectAttempts = n; }
 
     bool connectToInterface() override;
     void disconnectFromInterface() override;
@@ -41,6 +46,7 @@ private:
     void sendDisconnectRequest();
     void sendTunnelRequest(const QByteArray &cemi);
     void doRetransmit();
+    void scheduleReconnect(const QString &reason);
 
     void handleConnectResponse(const QByteArray &data);
     void handleTunnelAck(const QByteArray &data);
@@ -51,7 +57,7 @@ private:
     QTimer      *m_heartbeat          = nullptr;  // 60 s periodic
     QTimer      *m_ackTimer           = nullptr;  // 1 s one-shot ACK timeout
     QTimer      *m_connectTimer       = nullptr;  // 5 s one-shot connect timeout
-    QTimer      *m_heartbeatRespTimer = nullptr;  // 10 s one-shot heartbeat-response timeout
+    QTimer      *m_heartbeatRespTimer = nullptr;  // 3 s one-shot heartbeat-response timeout
 
     QHostAddress m_remoteHost;
     quint16      m_remotePort   = 3671;
@@ -60,5 +66,9 @@ private:
     quint8       m_pendingSeq   = 0;    // sequence number awaiting ACK
     QByteArray   m_pendingPacket;       // full TUNNEL_REQUEST awaiting ACK (for retransmit)
     int          m_retryCount   = 0;
-    bool         m_connected    = false;
+
+    bool         m_connected               = false;
+    bool         m_userInitiatedDisconnect = false;
+    int          m_reconnectAttempt        = 0;
+    int          m_maxReconnectAttempts    = 5;
 };

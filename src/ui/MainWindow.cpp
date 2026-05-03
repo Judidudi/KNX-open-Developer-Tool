@@ -34,7 +34,8 @@
 #include <QStatusBar>
 #include <QUndoStack>
 #include <QSplitter>
-#include <QStackedWidget>
+#include <QTabWidget>
+#include <QTabBar>
 #include <QLabel>
 #include <QAction>
 #include <QDockWidget>
@@ -76,7 +77,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_groupMonitor->setProject(m_project.get());
     m_propertiesPanel->setProject(m_project.get());
     m_propertiesPanel->setInterfaceManager(m_interfaces.get());
-    m_deviceEditor->setInterfaceManager(m_interfaces.get());
 
     connect(m_interfaces.get(), &InterfaceManager::connected,
             this, &MainWindow::onInterfaceConnected);
@@ -233,19 +233,38 @@ void MainWindow::setupToolBar()
 void MainWindow::setupCentralWidget()
 {
     m_projectTree  = new ProjectTreeWidget(this);
-    m_deviceEditor = new DeviceEditorWidget(this);
     m_busMonitor   = new BusMonitorWidget(this);
     m_groupMonitor = new GroupMonitorWidget(this);
 
-    m_centerStack = new QStackedWidget(this);
-    m_centerStack->addWidget(m_deviceEditor);
-    m_centerStack->addWidget(m_busMonitor);
-    m_centerStack->addWidget(m_groupMonitor);
-    m_centerStack->setCurrentWidget(m_deviceEditor);
+    m_centerTabs = new QTabWidget(this);
+    m_centerTabs->setTabsClosable(true);
+    m_centerTabs->setMovable(true);
+    m_centerTabs->setDocumentMode(true);
+
+    // Permanent tabs (no close button)
+    const int idxBus = m_centerTabs->addTab(m_busMonitor,   tr("Busmonitor"));
+    const int idxGa  = m_centerTabs->addTab(m_groupMonitor, tr("Gruppenmonitor"));
+    m_centerTabs->tabBar()->setTabButton(idxBus, QTabBar::RightSide, nullptr);
+    m_centerTabs->tabBar()->setTabButton(idxGa,  QTabBar::RightSide, nullptr);
+
+    connect(m_centerTabs, &QTabWidget::tabCloseRequested,
+            this, &MainWindow::onTabCloseRequested);
+    connect(m_centerTabs, &QTabWidget::currentChanged, this, [this](int) {
+        auto *w = m_centerTabs->currentWidget();
+        auto *editor = qobject_cast<DeviceEditorWidget*>(w);
+        if (editor) {
+            auto *dev = m_openEditors.key(editor, nullptr);
+            if (dev) {
+                m_selectedDevice = dev;
+                m_propertiesPanel->showDevice(dev);
+                updateConnectionUi();
+            }
+        }
+    });
 
     auto *splitter = new QSplitter(Qt::Horizontal, this);
     splitter->addWidget(m_projectTree);
-    splitter->addWidget(m_centerStack);
+    splitter->addWidget(m_centerTabs);
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({300, 980});
@@ -261,13 +280,10 @@ void MainWindow::setupCentralWidget()
             this, &MainWindow::onGroupAddressSelected);
     connect(m_projectTree, &ProjectTreeWidget::selectionCleared,
             this, [this]() {
-                m_deviceEditor->clearDevice();
                 m_propertiesPanel->clearSelection();
             });
     connect(m_projectTree, &ProjectTreeWidget::addDeviceRequested,
             this, &MainWindow::onAddDeviceRequested);
-    connect(m_deviceEditor, &DeviceEditorWidget::deviceModified,
-            this, [this](){ markModified(); });
 
     connect(m_propertiesPanel, &PropertiesPanel::deviceModified,
             this, [this]() {
@@ -366,11 +382,11 @@ void MainWindow::newProject()
     m_modified = false;
     m_undoStack->clear();
 
+    closeAllEditorTabs();
     m_projectTree->setProject(m_project.get());
     m_busMonitor->setProject(m_project.get());
     m_groupMonitor->setProject(m_project.get());
     m_propertiesPanel->setProject(m_project.get());
-    m_deviceEditor->clearDevice();
     m_propertiesPanel->clearSelection();
     updateWindowTitle();
     statusBar()->showMessage(tr("Neues Projekt angelegt"));
@@ -411,11 +427,11 @@ void MainWindow::openProject()
         m_currentFilePath = path;
         m_modified = false;
         m_undoStack->clear();
+        closeAllEditorTabs();
         m_projectTree->setProject(m_project.get());
         m_busMonitor->setProject(m_project.get());
         m_groupMonitor->setProject(m_project.get());
         m_propertiesPanel->setProject(m_project.get());
-        m_deviceEditor->clearDevice();
         m_propertiesPanel->clearSelection();
         addToRecentFiles(path);
         updateWindowTitle();
@@ -520,7 +536,6 @@ void MainWindow::onDeviceSelected(DeviceInstance *device)
 {
     m_selectedDevice = device;
     if (!device) {
-        m_deviceEditor->clearDevice();
         m_propertiesPanel->clearSelection();
         updateConnectionUi();
         return;
@@ -529,8 +544,28 @@ void MainWindow::onDeviceSelected(DeviceInstance *device)
     if (!device->appProgram())
         device->setAppProgram(m_catalog->sharedByProductRef(device->productRefId()));
 
-    m_deviceEditor->setDevice(device, m_project.get());
-    m_centerStack->setCurrentWidget(m_deviceEditor);
+    // Re-focus existing tab if already open
+    auto it = m_openEditors.constFind(device);
+    if (it != m_openEditors.constEnd()) {
+        m_centerTabs->setCurrentWidget(it.value());
+        m_propertiesPanel->showDevice(device);
+        updateConnectionUi();
+        return;
+    }
+
+    // Open new device editor tab
+    auto *editor = new DeviceEditorWidget(this);
+    editor->setInterfaceManager(m_interfaces.get());
+    editor->setDevice(device, m_project.get());
+    connect(editor, &DeviceEditorWidget::deviceModified, this, &MainWindow::markModified);
+
+    const QString title = device->physicalAddress().isEmpty()
+        ? device->description()
+        : QStringLiteral("%1 – %2").arg(device->physicalAddress(), device->description());
+    const int idx = m_centerTabs->addTab(editor, title.isEmpty() ? tr("Gerät") : title);
+    m_centerTabs->setCurrentIndex(idx);
+    m_openEditors.insert(device, editor);
+
     m_propertiesPanel->showDevice(device);
     updateConnectionUi();
 }
@@ -538,7 +573,6 @@ void MainWindow::onDeviceSelected(DeviceInstance *device)
 void MainWindow::onGroupAddressSelected(GroupAddress *ga)
 {
     m_selectedDevice = nullptr;
-    m_deviceEditor->clearDevice();
     m_propertiesPanel->showGroupAddress(ga);
     updateConnectionUi();
 }
@@ -579,12 +613,12 @@ void MainWindow::onDisconnectClicked()
 
 void MainWindow::onShowBusMonitor()
 {
-    m_centerStack->setCurrentWidget(m_busMonitor);
+    m_centerTabs->setCurrentWidget(m_busMonitor);
 }
 
 void MainWindow::onShowGroupMonitor()
 {
-    m_centerStack->setCurrentWidget(m_groupMonitor);
+    m_centerTabs->setCurrentWidget(m_groupMonitor);
 }
 
 void MainWindow::refreshGroupMonitor()
@@ -783,10 +817,10 @@ void MainWindow::onOpenRecentFile(const QString &path)
     m_modified = false;
     m_undoStack->clear();
 
+    closeAllEditorTabs();
     m_projectTree->setProject(m_project.get());
     m_groupMonitor->setProject(m_project.get());
     m_propertiesPanel->setProject(m_project.get());
-    m_deviceEditor->clearDevice();
     m_propertiesPanel->clearSelection();
     addToRecentFiles(path);
     updateWindowTitle();
@@ -836,6 +870,13 @@ void MainWindow::onProgramClicked()
         }
         auto *programmer = new DeviceProgrammer(
             m_interfaces->activeInterface(), dev, dev->appProgram(), this);
+        {
+            QSettings s;
+            programmer->setTransportAckTimeoutMs(
+                s.value(QStringLiteral("programming/ackTimeoutMs"), 6000).toInt());
+            programmer->setVerifyEnabled(
+                s.value(QStringLiteral("programming/verifyEnabled"), true).toBool());
+        }
         auto *dlg = new ProgramDialog(programmer, this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->show();
@@ -950,11 +991,9 @@ void MainWindow::onDeleteAreaRequested(TopologyNode *area)
 
     for (int i = 0; i < m_project->areaCount(); ++i) {
         if (m_project->areaAt(i) == area) {
-            if (m_selectedDevice) {
-                m_selectedDevice = nullptr;
-                m_deviceEditor->clearDevice();
-                m_propertiesPanel->clearSelection();
-            }
+            closeAllEditorTabs();
+            m_selectedDevice = nullptr;
+            m_propertiesPanel->clearSelection();
             m_undoStack->push(new DeleteAreaCommand(m_project.get(), i));
             m_projectTree->refresh();
             markModified();
@@ -974,11 +1013,9 @@ void MainWindow::onDeleteLineRequested(TopologyNode *line)
     TopologyNode *area = line->parent();
     const int idx = area->indexOfChild(line);
     if (idx >= 0) {
-        if (m_selectedDevice) {
-            m_selectedDevice = nullptr;
-            m_deviceEditor->clearDevice();
-            m_propertiesPanel->clearSelection();
-        }
+        closeAllEditorTabs();
+        m_selectedDevice = nullptr;
+        m_propertiesPanel->clearSelection();
         m_undoStack->push(new DeleteLineCommand(area, idx));
         m_projectTree->refresh();
         markModified();
@@ -995,9 +1032,9 @@ void MainWindow::onDeleteDeviceRequested(DeviceInstance *dev)
             TopologyNode *line = area->childAt(l);
             const int idx = line->indexOfDevice(dev);
             if (idx >= 0) {
+                closeEditorFor(dev);
                 if (m_selectedDevice == dev) {
                     m_selectedDevice = nullptr;
-                    m_deviceEditor->clearDevice();
                     m_propertiesPanel->clearSelection();
                 }
                 m_undoStack->push(new DeleteDeviceCommand(line, idx));
@@ -1198,4 +1235,35 @@ void MainWindow::onDeleteBuildingPartRequested(BuildingPart *bp)
     }
     m_projectTree->refresh();
     markModified();
+}
+
+void MainWindow::onTabCloseRequested(int index)
+{
+    auto *w = m_centerTabs->widget(index);
+    auto *editor = qobject_cast<DeviceEditorWidget*>(w);
+    if (!editor) return;  // permanent tab (BusMonitor / GroupMonitor)
+    auto *key = m_openEditors.key(editor, nullptr);
+    if (key) m_openEditors.remove(key);
+    m_centerTabs->removeTab(index);
+    editor->deleteLater();
+}
+
+void MainWindow::closeEditorFor(DeviceInstance *dev)
+{
+    auto *editor = m_openEditors.take(dev);
+    if (!editor) return;
+    const int idx = m_centerTabs->indexOf(editor);
+    if (idx >= 0) m_centerTabs->removeTab(idx);
+    editor->deleteLater();
+}
+
+void MainWindow::closeAllEditorTabs()
+{
+    for (auto *editor : m_openEditors.values()) {
+        const int idx = m_centerTabs->indexOf(editor);
+        if (idx >= 0) m_centerTabs->removeTab(idx);
+        editor->deleteLater();
+    }
+    m_openEditors.clear();
+    m_selectedDevice = nullptr;
 }

@@ -257,16 +257,16 @@ void DeviceProgrammer::doStepVerify()
 
     m_verifyAwaiting = true;
 
-    // Non-fatal 2-second timeout — if device doesn't respond we continue anyway.
+    // 3-second timeout — treat as failure (device must respond to Memory_Read)
     m_timer->disconnect();
     connect(m_timer, &QTimer::timeout, this, [this]() {
         m_timer->disconnect();
         if (!m_verifyAwaiting || !m_running) return;
         m_verifyAwaiting = false;
-        qWarning("DeviceProgrammer: Parameter-Verifikation Timeout – wird fortgesetzt");
-        advance();
+        fail(tr("Parameter-Verifikation Timeout – Gerät antwortete nicht auf Memory_Read.\n"
+                "Bitte Programmierung wiederholen."));
     });
-    m_timer->start(2000);
+    m_timer->start(3000);
 
     const uint8_t cnt =
         static_cast<uint8_t>(qMin<uint32_t>(m_appProgram->memoryLayout.parameterSize, 12u));
@@ -376,8 +376,8 @@ void DeviceProgrammer::onTransportError(const QString &msg)
         m_verifyAwaiting = false;
         m_timer->stop();
         m_timer->disconnect();
-        qWarning("DeviceProgrammer: Verifikationsfehler (nicht fatal): %s", qPrintable(msg));
-        advance();
+        fail(tr("Parameter-Verifikation fehlgeschlagen: %1\n"
+                "Bitte Programmierung wiederholen.").arg(msg));
     } else {
         fail(tr("Transportfehler: %1").arg(msg));
     }

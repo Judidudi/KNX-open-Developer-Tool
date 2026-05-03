@@ -10,9 +10,11 @@
 #  include <fcntl.h>
 #  include <unistd.h>
 #  include <poll.h>
+#  include <cerrno>
 #endif
 
 #include <QDir>
+#include <QDebug>
 #include <algorithm>
 #include <cstring>
 
@@ -286,7 +288,22 @@ struct UsbKnxInterface::Priv
     {
         uint8_t report[HID_REPORT_SIZE] = {};
         const ssize_t n = ::read(hidFd, report, HID_REPORT_SIZE);
-        if (n <= 0) return false;  // EAGAIN or error
+        if (n < 0) {
+#ifdef Q_OS_LINUX
+            const int err = errno;
+            if (err == ENODEV || err == ENXIO || err == EIO) {
+                qWarning().nospace() << "[UsbKnx] HID-Gerät nicht mehr vorhanden (errno="
+                                     << err << "), trenne";
+                ::close(hidFd);
+                hidFd = -1;
+                emit q->errorOccurred(UsbKnxInterface::tr("USB-Interface getrennt (Gerät entfernt)"));
+                emit q->disconnected();
+                return false;
+            }
+#endif
+            return false;  // EAGAIN or transient error
+        }
+        if (n == 0) return false;
         if (n < 2)  return true;   // too short to be useful, but consumed
 
         // KNX USB HID spec 07_01_01 defines numbered reports (ID = 0x01).
@@ -357,7 +374,10 @@ struct UsbKnxInterface::Priv
         const int len          = std::min<int>(static_cast<int>(payload.size()), maxPayload);
         report[infoOffset + 1] = static_cast<uint8_t>(len);
         std::memcpy(report + infoOffset + 2, payload.constData(), static_cast<size_t>(len));
-        ::write(hidFd, report, HID_REPORT_SIZE);
+        const ssize_t written = ::write(hidFd, report, HID_REPORT_SIZE);
+        if (written != HID_REPORT_SIZE)
+            qWarning().nospace() << "[UsbKnx] HID-Write unvollständig: wrote=" << written
+                                 << " expected=" << HID_REPORT_SIZE;
 #else
         Q_UNUSED(cemi)
 #endif
@@ -413,7 +433,11 @@ struct UsbKnxInterface::Priv
         frame.append(static_cast<char>((cemi.size() >> 8) & 0xFF));
         frame.append(static_cast<char>( cemi.size()       & 0xFF));
         frame.append(cemi);
-        serial->write(frame);
+        const qint64 written = serial->write(frame);
+        if (written != static_cast<qint64>(frame.size()))
+            qWarning().nospace() << "[UsbKnx] Serial-Write unvollständig: wrote=" << written
+                                 << " expected=" << frame.size()
+                                 << " error=" << serial->errorString();
 #endif
     }
 };

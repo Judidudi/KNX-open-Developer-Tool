@@ -16,7 +16,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     : QDialog(parent)
 {
     setWindowTitle(tr("Einstellungen"));
-    setMinimumWidth(380);
+    setMinimumWidth(420);
 
     auto *mainLayout = new QVBoxLayout(this);
 
@@ -37,6 +37,27 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     connForm->addRow(QString(), m_connectOnStart);
 
     mainLayout->addWidget(connGroup);
+
+    // ── Stabilität ───────────────────────────────────────────────────────────
+    auto *stabGroup = new QGroupBox(tr("Verbindungs-Stabilität"), this);
+    auto *stabForm  = new QFormLayout(stabGroup);
+
+    m_autoReconnectCb = new QCheckBox(tr("Bei Verbindungsverlust automatisch neu verbinden"), stabGroup);
+    stabForm->addRow(QString(), m_autoReconnectCb);
+
+    m_maxReconnectSpin = new QSpinBox(stabGroup);
+    m_maxReconnectSpin->setRange(0, 20);
+    m_maxReconnectSpin->setSpecialValueText(tr("Deaktiviert"));
+    m_maxReconnectSpin->setSuffix(tr(" Versuche"));
+    stabForm->addRow(tr("Max. Reconnect-Versuche:"), m_maxReconnectSpin);
+
+    m_heartbeatTimeoutSpin = new QSpinBox(stabGroup);
+    m_heartbeatTimeoutSpin->setRange(1000, 30000);
+    m_heartbeatTimeoutSpin->setSingleStep(500);
+    m_heartbeatTimeoutSpin->setSuffix(tr(" ms"));
+    stabForm->addRow(tr("Heartbeat-Timeout:"), m_heartbeatTimeoutSpin);
+
+    mainLayout->addWidget(stabGroup);
 
     // ── Projekt ───────────────────────────────────────────────────────────────
     auto *projGroup = new QGroupBox(tr("Projekt"), this);
@@ -59,6 +80,21 @@ SettingsDialog::SettingsDialog(QWidget *parent)
 
     mainLayout->addWidget(busGroup);
 
+    // ── Programmierung ────────────────────────────────────────────────────────
+    auto *progGroup = new QGroupBox(tr("Programmierung"), this);
+    auto *progForm  = new QFormLayout(progGroup);
+
+    m_ackTimeoutSpin = new QSpinBox(progGroup);
+    m_ackTimeoutSpin->setRange(1000, 30000);
+    m_ackTimeoutSpin->setSingleStep(500);
+    m_ackTimeoutSpin->setSuffix(tr(" ms"));
+    progForm->addRow(tr("Transport-ACK-Timeout:"), m_ackTimeoutSpin);
+
+    m_verifyEnabledCb = new QCheckBox(tr("Parameter-Verifikation nach Schreiben"), progGroup);
+    progForm->addRow(QString(), m_verifyEnabledCb);
+
+    mainLayout->addWidget(progGroup);
+
     // ── Sprache ───────────────────────────────────────────────────────────────
     auto *uiGroup = new QGroupBox(tr("Oberfläche"), this);
     auto *uiForm  = new QFormLayout(uiGroup);
@@ -78,6 +114,10 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     connect(buttons, &QDialogButtonBox::accepted, this, &SettingsDialog::onAccepted);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
+    // Enable/disable reconnect options based on checkbox
+    connect(m_autoReconnectCb, &QCheckBox::toggled, m_maxReconnectSpin, &QSpinBox::setEnabled);
+    connect(m_autoReconnectCb, &QCheckBox::toggled, m_heartbeatTimeoutSpin, &QSpinBox::setEnabled);
+
     load();
 }
 
@@ -87,8 +127,19 @@ void SettingsDialog::load()
     m_hostEdit->setText(s.value(QStringLiteral("connection/defaultHost")).toString());
     m_portSpin->setValue(s.value(QStringLiteral("connection/defaultPort"), 3671).toInt());
     m_connectOnStart->setChecked(s.value(QStringLiteral("connection/connectOnStart"), false).toBool());
+
+    const bool autoRecon = s.value(QStringLiteral("connection/autoReconnect"), true).toBool();
+    m_autoReconnectCb->setChecked(autoRecon);
+    m_maxReconnectSpin->setValue(s.value(QStringLiteral("connection/maxReconnectAttempts"), 5).toInt());
+    m_heartbeatTimeoutSpin->setValue(s.value(QStringLiteral("connection/heartbeatTimeoutMs"), 3000).toInt());
+    m_maxReconnectSpin->setEnabled(autoRecon);
+    m_heartbeatTimeoutSpin->setEnabled(autoRecon);
+
     m_openLastProjCb->setChecked(s.value(QStringLiteral("project/openLastOnStart"), false).toBool());
     m_maxEntriesSpin->setValue(s.value(QStringLiteral("busMonitor/maxEntries"), 2000).toInt());
+
+    m_ackTimeoutSpin->setValue(s.value(QStringLiteral("programming/ackTimeoutMs"), 6000).toInt());
+    m_verifyEnabledCb->setChecked(s.value(QStringLiteral("programming/verifyEnabled"), true).toBool());
 
     const QString lang = s.value(QStringLiteral("ui/language"), QStringLiteral("de")).toString();
     const int langIdx  = m_langCombo->findData(lang);
@@ -98,12 +149,17 @@ void SettingsDialog::load()
 void SettingsDialog::save()
 {
     QSettings s;
-    s.setValue(QStringLiteral("connection/defaultHost"),    m_hostEdit->text().trimmed());
-    s.setValue(QStringLiteral("connection/defaultPort"),    m_portSpin->value());
-    s.setValue(QStringLiteral("connection/connectOnStart"), m_connectOnStart->isChecked());
-    s.setValue(QStringLiteral("project/openLastOnStart"),   m_openLastProjCb->isChecked());
-    s.setValue(QStringLiteral("busMonitor/maxEntries"),     m_maxEntriesSpin->value());
-    s.setValue(QStringLiteral("ui/language"),               m_langCombo->currentData().toString());
+    s.setValue(QStringLiteral("connection/defaultHost"),          m_hostEdit->text().trimmed());
+    s.setValue(QStringLiteral("connection/defaultPort"),          m_portSpin->value());
+    s.setValue(QStringLiteral("connection/connectOnStart"),       m_connectOnStart->isChecked());
+    s.setValue(QStringLiteral("connection/autoReconnect"),        m_autoReconnectCb->isChecked());
+    s.setValue(QStringLiteral("connection/maxReconnectAttempts"), m_maxReconnectSpin->value());
+    s.setValue(QStringLiteral("connection/heartbeatTimeoutMs"),   m_heartbeatTimeoutSpin->value());
+    s.setValue(QStringLiteral("project/openLastOnStart"),         m_openLastProjCb->isChecked());
+    s.setValue(QStringLiteral("busMonitor/maxEntries"),           m_maxEntriesSpin->value());
+    s.setValue(QStringLiteral("programming/ackTimeoutMs"),        m_ackTimeoutSpin->value());
+    s.setValue(QStringLiteral("programming/verifyEnabled"),       m_verifyEnabledCb->isChecked());
+    s.setValue(QStringLiteral("ui/language"),                     m_langCombo->currentData().toString());
     s.sync();
 }
 

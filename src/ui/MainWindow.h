@@ -2,6 +2,7 @@
 
 #include "BuildingPart.h"
 #include <QMainWindow>
+#include <QHash>
 #include <memory>
 
 class Project;
@@ -18,7 +19,7 @@ class BusMonitorWidget;
 class GroupMonitorWidget;
 class PropertiesPanel;
 
-class QStackedWidget;
+class QTabWidget;
 class QLabel;
 class QAction;
 class QUndoStack;
@@ -58,6 +59,7 @@ private slots:
     void onInterfaceConnected();
     void onInterfaceDisconnected();
     void onInterfaceError(const QString &message);
+    void onTabCloseRequested(int index);
 
     // G1: Topology management
     void onAddAreaRequested();
@@ -93,17 +95,21 @@ private:
     void refreshGroupMonitor();
     void addToRecentFiles(const QString &path);
     void updateRecentFilesMenu();
+    void closeEditorFor(DeviceInstance *dev);
+    void closeAllEditorTabs();
 
     std::unique_ptr<Project>          m_project;
     std::unique_ptr<KnxprodCatalog>   m_catalog;
     std::unique_ptr<InterfaceManager> m_interfaces;
 
     ProjectTreeWidget  *m_projectTree     = nullptr;
-    DeviceEditorWidget *m_deviceEditor    = nullptr;
     BusMonitorWidget   *m_busMonitor      = nullptr;
     GroupMonitorWidget *m_groupMonitor    = nullptr;
-    QStackedWidget     *m_centerStack     = nullptr;
+    QTabWidget         *m_centerTabs      = nullptr;
     PropertiesPanel    *m_propertiesPanel = nullptr;
+
+    // Maps open device editors by device pointer
+    QHash<DeviceInstance*, DeviceEditorWidget*> m_openEditors;
 
     QLabel      *m_connectionStatusLabel = nullptr;
     QString      m_currentFilePath;
