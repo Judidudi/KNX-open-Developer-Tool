@@ -1,6 +1,7 @@
 #include "ConnectDialog.h"
 #include "KnxIpDiscovery.h"
 #include "UsbKnxInterface.h"
+#include "KnxUsbMonitor.h"
 
 #include <QVBoxLayout>
 #include <QFormLayout>
@@ -101,8 +102,9 @@ static QWidget *buildUsbTab(ConnectDialog *dlg,
 
 // ---- ConnectDialog ----------------------------------------------------------
 
-ConnectDialog::ConnectDialog(QWidget *parent)
+ConnectDialog::ConnectDialog(KnxUsbMonitor *monitor, QWidget *parent)
     : QDialog(parent)
+    , m_monitor(monitor)
 {
     setWindowTitle(tr("Bus-Interface verbinden"));
     setMinimumSize(520, 420);
@@ -150,7 +152,9 @@ UsbKnxInterface::Transport ConnectDialog::usbTransport() const
 
 QString ConnectDialog::usbDevicePath() const
 {
-    return m_usbDevice->currentText();
+    // When monitor-populated items store the path as UserRole data
+    const QVariant d = m_usbDevice->currentData();
+    return d.isValid() ? d.toString() : m_usbDevice->currentText();
 }
 
 void ConnectDialog::startDiscovery()
@@ -199,6 +203,26 @@ void ConnectDialog::refreshUsbDevices()
 {
     m_usbDevice->clear();
     const auto t = usbTransport();
+
+    if (t == UsbKnxInterface::Transport::HID && m_monitor) {
+        // Use the monitor's already-scanned list — no extra scan needed
+        const auto monDevices = m_monitor->devices();
+        if (monDevices.isEmpty()) {
+            m_usbDevice->addItem(tr("(Kein KNX-Interface erkannt)"));
+            m_usbDevice->setEnabled(false);
+        } else {
+            for (const auto &d : monDevices) {
+                const QString label = d.name.isEmpty()
+                    ? d.path
+                    : QStringLiteral("%1 (%2)").arg(d.name, d.path);
+                m_usbDevice->addItem(label, d.path);
+            }
+            m_usbDevice->setEnabled(true);
+        }
+        return;
+    }
+
+    // Fallback: use static scan from UsbKnxInterface
     const QStringList devices =
         (t == UsbKnxInterface::Transport::Serial)
             ? UsbKnxInterface::availableSerialPorts()

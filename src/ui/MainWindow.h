@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BuildingPart.h"
+#include "KnxUsbMonitor.h"
 #include <QMainWindow>
 #include <QHash>
 #include <memory>
@@ -80,6 +81,10 @@ private slots:
     void onAddBuildingChildRequested(BuildingPart *parent, BuildingPart::Type childType);
     void onDeleteBuildingPartRequested(BuildingPart *bp);
 
+    // AA: USB auto-discovery
+    void onUsbDeviceFound(KnxUsbMonitor::DeviceInfo info);
+    void onUsbDeviceRemoved(QString path);
+
 private slots:
     void startCatalogLoad();
 
@@ -101,6 +106,10 @@ private:
     std::unique_ptr<Project>          m_project;
     std::unique_ptr<KnxprodCatalog>   m_catalog;
     std::unique_ptr<InterfaceManager> m_interfaces;
+
+    KnxUsbMonitor *m_usbMonitor       = nullptr;
+    bool           m_udevPromptShown  = false;
+    QString        m_autoConnectedPath;
 
     ProjectTreeWidget  *m_projectTree     = nullptr;
     BusMonitorWidget   *m_busMonitor      = nullptr;

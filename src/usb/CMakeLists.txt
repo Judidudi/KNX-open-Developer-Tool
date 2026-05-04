@@ -3,6 +3,8 @@ add_library(knxodt_usb STATIC
     UsbKnxInterface.cpp
     ConnectInterfaceFactory.h
     ConnectInterfaceFactory.cpp
+    KnxUsbMonitor.h
+    KnxUsbMonitor.cpp
 )
 
 target_include_directories(knxodt_usb PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
