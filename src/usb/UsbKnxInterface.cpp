@@ -251,14 +251,15 @@ struct UsbKnxInterface::Priv
         }
 
         // Negotiate EMI protocol type via Bus Access Server Feature Get/Set (spec 07_01_01).
-        // Falls back to EMI1 + BCU activation if device does not respond to management frames
-        // (Hager/Insta and many older devices don't implement negotiation but need BCU init).
-        if (!negotiateHidProtocol()) {
+        // Falls back to EMI1 if device does not respond to management frames.
+        // BCU activation is sent once after negotiation, regardless of method.
+        const bool negotiated = negotiateHidProtocol();
+        if (!negotiated) {
             hidEmiType = HID_PROTO_EMI1;
-            activateBcuEmi1();
-            qWarning().nospace() << "[UsbKnx] BAS-Aushandlung fehlgeschlagen – "
-                                    "EMI1 als Fallback, BCU-Aktivierung gesendet";
+            qWarning() << "[UsbKnx] BAS-Aushandlung fehlgeschlagen – EMI1 als Fallback";
         }
+        if (hidEmiType == HID_PROTO_EMI1)
+            activateBcuEmi1();
 
         // Poll every 5 ms instead of QSocketNotifier: hidraw fds are not
         // reliably selectable on all kernel/distro combinations.
@@ -402,8 +403,6 @@ struct UsbKnxInterface::Priv
             return false;
 
         hidEmiType = chosen;
-        if (chosen == HID_PROTO_EMI1)
-            activateBcuEmi1();
         return true;
     }
 
@@ -428,6 +427,12 @@ struct UsbKnxInterface::Priv
             return false;  // EAGAIN or transient error
         }
         if (n == 0) return false;
+
+        // Raw dump — shows every byte the device sends before any parsing
+        qDebug().nospace() << "[UsbKnx] RAW " << n << "B: "
+                           << QByteArray(reinterpret_cast<const char *>(report),
+                                         static_cast<int>(n)).toHex(' ').left(96);
+
         if (n < 11) {
             qDebug().nospace() << "[UsbKnx] HID-Read zu kurz (" << n << " Byte)";
             return true;
