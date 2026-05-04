@@ -337,6 +337,16 @@ bool CemiFrame::isDeviceDescriptorResponse() const
     return (apci() & 0x3FC) == APCI_DEVICE_DESCRIPTOR_RESPONSE;
 }
 
+uint16_t CemiFrame::deviceDescriptorMaskVersion() const
+{
+    // DeviceDescriptor_Response(0): APDU[0] bits[1:0]=0b11, APDU[1]=0x40|type(0)=0x40
+    // APDU[2]=maskHi, APDU[3]=maskLo
+    if (!isDeviceDescriptorResponse()) return 0;
+    if (apdu.size() < 4) return 0;
+    if ((static_cast<uint8_t>(apdu[1]) & 0x3F) != 0) return 0;  // type must be 0
+    return (static_cast<uint8_t>(apdu[2]) << 8) | static_cast<uint8_t>(apdu[3]);
+}
+
 bool CemiFrame::isMemoryResponse() const
 {
     if (apdu.size() < 4 || groupAddress) return false;

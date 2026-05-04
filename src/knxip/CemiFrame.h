@@ -90,6 +90,9 @@ struct CemiFrame
     bool isGroupValueWrite() const;
     bool isGroupValueResponse() const;
     bool isDeviceDescriptorResponse() const;
+    // Returns the BCU mask version (e.g. 0x07B0) from a DeviceDescriptor_Response(0).
+    // Returns 0 if this is not a valid type-0 DeviceDescriptor response.
+    uint16_t deviceDescriptorMaskVersion() const;
     bool isMemoryResponse() const;
     bool isPropertyValueResponse() const;
     bool isIndividualAddressResponse() const;

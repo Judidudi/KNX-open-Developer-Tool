@@ -22,25 +22,45 @@
 // Start byte 0xAB is not a valid cEMI message code (valid: 0x11/0x2E/0x29).
 static constexpr uint8_t SERIAL_START     = 0xAB;
 
-// ---- KNX USB HID (spec 07_01_01) -------------------------------------------
-static constexpr int    HID_REPORT_SIZE   = 64;
+// ---- KNX USB HID (spec 07_01_01 + 03_06_03 Ch. 4.1) ------------------------
+//
+// Wire format of a HID report sent/received over /dev/hidrawN:
+//   [Numbered] Report ID (0x01)
+//   ─── KNX HID Report Header (3 bytes) ───
+//   Byte 1: SeqNo (bits 0-3) + PacketType (bits 4-7) — single frame = 0x05
+//   Byte 2: PacketLength  (= 8-byte body header + body)
+//   ─── KNX HID Report Body Header (8 bytes) ───
+//   Byte 3: ProtocolVersion = 0x00
+//   Byte 4: HeaderLength    = 0x08
+//   Byte 5-6: BodyLength    (BE — bytes after this header)
+//   Byte 7: ProtocolID      0x01 = KnxTunnel, 0x0F = BusAccessServerFeature
+//   Byte 8: EMI ID          0x01 EMI1, 0x02 EMI2, 0x03 cEMI, 0x0F BusAccess
+//   Byte 9-10: ManufacturerCode (BE, 0x0000)
+//   ─── Body (EMI frame or BusAccess service request/response) ───
+
+static constexpr int     HID_REPORT_SIZE  = 64;
 static constexpr uint8_t HID_REPORT_ID    = 0x01;
 
-// HID Packet Info – lower nibble is the protocol/transport type:
-//   0x00 = KNX USB management (Device Feature Get/Set)
-//   0x01 = EMI1
-//   0x02 = EMI2
-//   0x03 = cEMI
-static constexpr uint8_t HID_PROTO_MGMT  = 0x00;
-static constexpr uint8_t HID_PROTO_EMI2  = 0x02;
-static constexpr uint8_t HID_PROTO_CEMI  = 0x03;
+// EMI ID / Protocol IDs that may appear in byte 7/8 of the HID body header
+static constexpr uint8_t HID_PROTO_EMI1   = 0x01;
+static constexpr uint8_t HID_PROTO_EMI2   = 0x02;
+static constexpr uint8_t HID_PROTO_CEMI   = 0x03;
 
-// KNX USB management service types (big-endian 16-bit in body bytes 0-1)
-static constexpr uint8_t SVC_FEAT_GET_REQ  = 0x30; // 0x0530
-static constexpr uint8_t SVC_FEAT_GET_RESP = 0x31; // 0x0531
-static constexpr uint8_t SVC_FEAT_SET_REQ  = 0x32; // 0x0532
-static constexpr uint8_t SVC_FEAT_SET_RESP = 0x33; // 0x0533
-static constexpr uint8_t SVC_PREFIX        = 0x05;
+// Body header constants
+static constexpr uint8_t HID_PROTO_VERSION  = 0x00;
+static constexpr uint8_t HID_HEADER_LENGTH  = 0x08;
+static constexpr uint8_t HID_PID_KNX_TUNNEL = 0x01;
+static constexpr uint8_t HID_PID_BUS_ACCESS = 0x0F;
+// HID_BUS_ACCESS_SVC removed: BAS service type is encoded in EMI-ID slot (BAS_GET_REQ etc.)
+
+// Packet type for single-frame transfer (most KNX HID frames fit in one report)
+static constexpr uint8_t HID_PKT_SINGLE     = 0x05;
+
+// Bus Access Server Feature service types — encoded in EMI-ID slot (Byte 8) of BAS reports
+static constexpr uint8_t BAS_GET_REQ  = 0x01;  // Feature Get Request
+static constexpr uint8_t BAS_GET_RESP = 0x02;  // Feature Get Response
+static constexpr uint8_t BAS_SET_REQ  = 0x03;  // Feature Set Request
+static constexpr uint8_t BAS_SET_RESP = 0x04;  // Feature Set Response
 
 // Feature IDs
 static constexpr uint8_t FEAT_SUPPORTED_EMI = 0x01; // bitmap: bit0=EMI1 bit1=EMI2 bit2=cEMI
@@ -75,6 +95,59 @@ static QByteArray cemiToEmi2(const QByteArray &cemi)
     return emi2;
 }
 
+// EMI1 L_Data frame:  [code][ctrl1][srcHi][srcLo][dstHi][dstLo][NPCI][apdu...]
+//   NPCI = AT(bit7) | HopCount(bits6-4) | DataLen(bits3-0)
+// cEMI L_Data frame:  [code][0x00][ctrl1][ctrl2][srcHi][srcLo][dstHi][dstLo][dataLen][apdu...]
+//   ctrl2 = NPCI & 0xF0  (AT + HopCount bits at identical positions)
+
+static QByteArray emi1ToCemi(const QByteArray &emi1)
+{
+    if (emi1.size() < 7) return {};
+    uint8_t cemiCode;
+    switch (static_cast<uint8_t>(emi1[0])) {
+        case 0x49: cemiCode = 0x29; break;   // L_Data.ind
+        case 0x4E: cemiCode = 0x2E; break;   // L_Data.con
+        case 0x11: cemiCode = 0x11; break;   // L_Data.req (same in both)
+        default: return {};
+    }
+    const uint8_t npci = static_cast<uint8_t>(emi1[6]);
+    QByteArray cemi;
+    cemi.reserve(emi1.size() + 1);
+    cemi.append(static_cast<char>(cemiCode));
+    cemi.append('\x00');                        // addInfoLen = 0
+    cemi.append(emi1[1]);                       // ctrl1
+    cemi.append(static_cast<char>(npci & 0xF0)); // ctrl2 = AT(bit7) + HopCount(bits6-4)
+    cemi.append(emi1.mid(2, 4));                // src(2) + dst(2)
+    cemi.append(static_cast<char>(npci & 0x0F)); // dataLen (bits3-0 of NPCI)
+    cemi.append(emi1.mid(7));                   // APCI + data
+    return cemi;
+}
+
+static QByteArray cemiToEmi1(const QByteArray &cemi)
+{
+    if (cemi.size() < 2) return {};
+    const int addLen = static_cast<uint8_t>(cemi[1]);
+    const int base   = 2 + addLen;
+    if (cemi.size() < base + 7) return {};
+    uint8_t emi1Code;
+    switch (static_cast<uint8_t>(cemi[0])) {
+        case 0x29: emi1Code = 0x49; break;
+        case 0x2E: emi1Code = 0x4E; break;
+        case 0x11: emi1Code = 0x11; break;
+        default: return {};
+    }
+    const uint8_t ctrl2 = static_cast<uint8_t>(cemi[base + 1]);
+    const uint8_t dLen  = static_cast<uint8_t>(cemi[base + 6]);
+    QByteArray emi1;
+    emi1.reserve(cemi.size() - addLen - 1);
+    emi1.append(static_cast<char>(emi1Code));
+    emi1.append(cemi[base]);                    // ctrl1
+    emi1.append(cemi.mid(base + 2, 4));         // src(2) + dst(2)
+    emi1.append(static_cast<char>((ctrl2 & 0xF0) | (dLen & 0x0F))); // NPCI
+    emi1.append(cemi.mid(base + 7));            // APCI + data
+    return emi1;
+}
+
 // ---- Priv -------------------------------------------------------------------
 
 struct UsbKnxInterface::Priv
@@ -83,8 +156,9 @@ struct UsbKnxInterface::Priv
     Transport    transport;
     QString      devicePath;
     bool         connected          = false;
-    uint8_t      hidEmiType         = HID_PROTO_EMI2; // updated by negotiation or auto-detect
+    uint8_t      hidEmiType         = HID_PROTO_EMI1; // updated by negotiation or auto-detect
     bool         hidNumberedReports = true;            // true = report ID byte present
+    uint8_t      hidTxSeq           = 0;               // outgoing sequence number (1..15)
     QByteArray   recvBuf;
 
 #ifndef KNXODT_NO_SERIAL
@@ -176,18 +250,14 @@ struct UsbKnxInterface::Priv
             return false;
         }
 
-        // Negotiate EMI protocol type via Device Feature Get/Set (spec 07_01_01).
-        // Falls back to cEMI if the device does not respond to management frames
-        // (some devices work without explicit negotiation).
+        // Negotiate EMI protocol type via Bus Access Server Feature Get/Set (spec 07_01_01).
+        // Falls back to EMI1 + BCU activation if device does not respond to management frames
+        // (Hager/Insta and many older devices don't implement negotiation but need BCU init).
         if (!negotiateHidProtocol()) {
-            // Many older devices (e.g. Hager, Siemens) don't implement the
-            // Device Feature management protocol but work fine with EMI2.
-            // We keep hidEmiType = HID_PROTO_EMI2 and auto-detect the actual
-            // protocol from the first received frame.
-            emit q->errorOccurred(
-                QObject::tr("USB-HID %1: Protokollaushandlung fehlgeschlagen – "
-                            "EMI2 wird als Fallback verwendet, "
-                            "Protokoll wird automatisch erkannt.").arg(devicePath));
+            hidEmiType = HID_PROTO_EMI1;
+            activateBcuEmi1();
+            qWarning().nospace() << "[UsbKnx] BAS-Aushandlung fehlgeschlagen – "
+                                    "EMI1 als Fallback, BCU-Aktivierung gesendet";
         }
 
         // Poll every 5 ms instead of QSocketNotifier: hidraw fds are not
@@ -222,64 +292,118 @@ struct UsbKnxInterface::Priv
         return ::read(hidFd, buf, HID_REPORT_SIZE) == HID_REPORT_SIZE;
     }
 
-    // Send a KNX USB management request and read back the response.
-    // body: bytes after the 2-byte service type prefix (0x05 XX).
-    bool hidMgmtRequest(uint8_t svcByte, const QByteArray &body,
-                        uint8_t expectedRespSvc, QByteArray &respBody)
+    // Build a KNX HID report (numbered or unnumbered) and write it to the device.
+    // payload = body bytes that come AFTER the 8-byte KNX HID Report Body Header.
+    bool hidWriteReport(uint8_t protoId, uint8_t emiId, const QByteArray &payload)
     {
-        uint8_t req[HID_REPORT_SIZE] = {};
-        req[0] = HID_REPORT_ID;
-        req[1] = HID_PROTO_MGMT;
-        req[2] = static_cast<uint8_t>(2 + body.size()); // service type (2) + body
-        req[3] = SVC_PREFIX;
-        req[4] = svcByte;
-        std::memcpy(req + 5, body.constData(), static_cast<size_t>(body.size()));
+        const int bodyLen = payload.size();   // BodyLen = payload only; ProtoID/EmiID/Mfg are in header
 
-        if (::write(hidFd, req, HID_REPORT_SIZE) != HID_REPORT_SIZE)
-            return false;
+        uint8_t r[HID_REPORT_SIZE] = {};
+        int o = 0;
+        if (hidNumberedReports) r[o++] = HID_REPORT_ID;
+        // SeqNo (low nibble) + PacketType=Single (high nibble)
+        const uint8_t seq = static_cast<uint8_t>(((++hidTxSeq) & 0x0F));
+        r[o++] = static_cast<uint8_t>((HID_PKT_SINGLE << 4) | seq);
+        r[o++] = static_cast<uint8_t>(8 + bodyLen);     // PacketLength
+        r[o++] = HID_PROTO_VERSION;                     // 0x00
+        r[o++] = HID_HEADER_LENGTH;                     // 0x08
+        r[o++] = static_cast<uint8_t>((bodyLen >> 8) & 0xFF);
+        r[o++] = static_cast<uint8_t>( bodyLen       & 0xFF);
+        r[o++] = protoId;
+        r[o++] = emiId;
+        r[o++] = 0; r[o++] = 0;                         // ManufacturerCode = 0
+        std::memcpy(r + o, payload.constData(),
+                    static_cast<size_t>(std::min<int>(payload.size(), HID_REPORT_SIZE - o)));
 
-        uint8_t resp[HID_REPORT_SIZE] = {};
-        if (!hidPollRead(resp, HID_INIT_TIMEOUT_MS))
+        const ssize_t written = ::write(hidFd, r, HID_REPORT_SIZE);
+        if (written != HID_REPORT_SIZE) {
+            qWarning().nospace() << "[UsbKnx] HID-Write unvollständig: wrote=" << written;
             return false;
-        if (resp[0] != HID_REPORT_ID || (resp[1] & 0x0F) != HID_PROTO_MGMT)
-            return false;
-        if (resp[3] != SVC_PREFIX || resp[4] != expectedRespSvc)
-            return false;
-
-        const int dataLen = resp[2];
-        if (dataLen < 2) return false;
-        respBody = QByteArray(reinterpret_cast<const char *>(resp + 5), dataLen - 2);
+        }
         return true;
+    }
+
+    // Send a KNX USB Bus Access Server Feature management request and wait for response.
+    // svcType  = service type encoded in the EMI-ID slot (BAS_GET_REQ / BAS_SET_REQ).
+    // reqBody  = [featureId, optionalValue...]
+    // respBody = full response body [featureId, value...] on success
+    bool hidMgmtRequest(uint8_t svcType, const QByteArray &reqBody,
+                        uint8_t expectedRespSvcType, QByteArray &respBody)
+    {
+        if (!hidWriteReport(HID_PID_BUS_ACCESS, svcType, reqBody))
+            return false;
+
+        // Read response — skip unrelated bus traffic frames
+        for (int i = 0; i < 8; ++i) {
+            uint8_t resp[HID_REPORT_SIZE] = {};
+            if (!hidPollRead(resp, HID_INIT_TIMEOUT_MS))
+                return false;
+
+            const int hdrBase = hidNumberedReports ? 1 : 0;
+            if (HID_REPORT_SIZE < hdrBase + 11)          continue;
+            if (resp[hdrBase + 2] != HID_PROTO_VERSION)  continue;
+            if (resp[hdrBase + 3] != HID_HEADER_LENGTH)  continue;
+            if (resp[hdrBase + 6] != HID_PID_BUS_ACCESS) continue;  // bus traffic
+            if (resp[hdrBase + 7] != expectedRespSvcType) continue;
+
+            const int bodyLen = (static_cast<uint8_t>(resp[hdrBase + 4]) << 8)
+                               |  static_cast<uint8_t>(resp[hdrBase + 5]);
+            if (bodyLen < 1) continue;
+
+            // Verify feature ID in response body matches our request
+            if (!reqBody.isEmpty()
+                && static_cast<uint8_t>(resp[hdrBase + 10]) != static_cast<uint8_t>(reqBody[0]))
+                continue;
+
+            respBody = QByteArray(reinterpret_cast<const char *>(resp + hdrBase + 10), bodyLen);
+            return true;
+        }
+        return false;
+    }
+
+    // BCU activation for EMI1 interfaces (from KNX USB spec / knxd reference implementation).
+    // Sends PC_Set_Value.req to put the bus coupling unit into receive/normal mode.
+    void activateBcuEmi1()
+    {
+        static const uint8_t kBcuActivate[] = {
+            0x46,0x01,0x01,0x16,0x00,0xFF,0x00,0x00,0x00,0x11,0x52,0xD0,0x65,0xD9,0xC1,0xAA
+        };
+        hidWriteReport(HID_PID_KNX_TUNNEL, HID_PROTO_EMI1,
+                       QByteArray(reinterpret_cast<const char *>(kBcuActivate),
+                                  static_cast<int>(sizeof(kBcuActivate))));
+        qDebug() << "[UsbKnx] BCU-Aktivierung (EMI1 PC_Set_Value.req) gesendet";
     }
 
     bool negotiateHidProtocol()
     {
-        // Step 1: query supported EMI types
-        QByteArray resp;
+        // Step 1: query supported EMI types (Feature 0x01)
         const QByteArray getReq(1, static_cast<char>(FEAT_SUPPORTED_EMI));
-        if (!hidMgmtRequest(SVC_FEAT_GET_REQ, getReq, SVC_FEAT_GET_RESP, resp))
+        QByteArray resp;
+        if (!hidMgmtRequest(BAS_GET_REQ, getReq, BAS_GET_RESP, resp))
             return false;
 
-        // resp[0] = feature id, resp[1] = supported bitmap
         if (resp.size() < 2 || static_cast<uint8_t>(resp[0]) != FEAT_SUPPORTED_EMI)
             return false;
 
         const uint8_t supported = static_cast<uint8_t>(resp[1]);
-        // bit2 = cEMI, bit1 = EMI2, bit0 = EMI1
+        // bit2=cEMI, bit1=EMI2, bit0=EMI1 — choose best available
         uint8_t chosen;
         if      (supported & 0x04) chosen = HID_PROTO_CEMI;
         else if (supported & 0x02) chosen = HID_PROTO_EMI2;
-        else return false; // only EMI1 – not supported by this tool
+        else if (supported & 0x01) chosen = HID_PROTO_EMI1;  // Hager/Insta
+        else return false;
 
-        // Step 2: set chosen EMI type
+        // Step 2: set chosen EMI type (Feature 0x02)
         QByteArray setReq;
         setReq.append(static_cast<char>(FEAT_CURRENT_EMI));
         setReq.append(static_cast<char>(chosen));
         QByteArray setResp;
-        if (!hidMgmtRequest(SVC_FEAT_SET_REQ, setReq, SVC_FEAT_SET_RESP, setResp))
+        if (!hidMgmtRequest(BAS_SET_REQ, setReq, BAS_SET_RESP, setResp))
             return false;
 
         hidEmiType = chosen;
+        if (chosen == HID_PROTO_EMI1)
+            activateBcuEmi1();
         return true;
     }
 
@@ -304,37 +428,64 @@ struct UsbKnxInterface::Priv
             return false;  // EAGAIN or transient error
         }
         if (n == 0) return false;
-        if (n < 2)  return true;   // too short to be useful, but consumed
+        if (n < 11) {
+            qDebug().nospace() << "[UsbKnx] HID-Read zu kurz (" << n << " Byte)";
+            return true;
+        }
 
-        // KNX USB HID spec 07_01_01 defines numbered reports (ID = 0x01).
-        // Some devices (Hager, older Siemens) use unnumbered reports where
-        // the report ID byte is absent from the hidraw stream.
-        // Detect format once from the first received frame and remember it.
-        if (report[0] == HID_REPORT_ID && n >= 3)
+        // Detect numbered vs unnumbered reports from first byte.
+        // Numbered:   [01][seq+type][len][00][08][bodyLen_hi][bodyLen_lo][protoId][emiId][mfg_hi][mfg_lo][...]
+        // Unnumbered:    [seq+type][len][00][08][bodyLen_hi][bodyLen_lo][protoId][emiId][mfg_hi][mfg_lo][...]
+        if (report[0] == HID_REPORT_ID
+            && report[3] == HID_PROTO_VERSION && report[4] == HID_HEADER_LENGTH) {
             hidNumberedReports = true;
-        else if (report[0] != HID_REPORT_ID)
+        } else if (report[0] != HID_REPORT_ID
+                   && report[2] == HID_PROTO_VERSION && report[3] == HID_HEADER_LENGTH) {
             hidNumberedReports = false;
+        }
+        const int hdrBase = hidNumberedReports ? 1 : 0;
 
-        // Locate Packet Info and data length based on format:
-        //   Numbered:   [0x01][PacketInfo][DataLen][Data...]
-        //   Unnumbered: [PacketInfo][DataLen][Data...]
-        const int infoOffset = hidNumberedReports ? 1 : 0;
-        const int dataOffset = infoOffset + 2;
-        if (n < dataOffset) return true;
+        if (n < hdrBase + 11) {
+            qDebug() << "[UsbKnx] HID-Read: Header unvollständig";
+            return true;
+        }
+        if (report[hdrBase + 2] != HID_PROTO_VERSION
+            || report[hdrBase + 3] != HID_HEADER_LENGTH) {
+            qDebug().nospace() << "[UsbKnx] HID-Read: ungültiger Body-Header (PV="
+                               << static_cast<int>(report[hdrBase + 2]) << " HL="
+                               << static_cast<int>(report[hdrBase + 3]) << ")";
+            return true;
+        }
 
-        const uint8_t packetInfo = report[infoOffset];
-        const uint8_t protoType  = packetInfo & 0x0F;
-        const int     dataLen    = static_cast<int>(static_cast<uint8_t>(report[infoOffset + 1]));
+        const uint8_t protoId = report[hdrBase + 6];
+        const uint8_t emiId   = report[hdrBase + 7];
+        const int     bodyLen = (static_cast<uint8_t>(report[hdrBase + 4]) << 8)
+                                | static_cast<uint8_t>(report[hdrBase + 5]);
+        // bodyLen = length of EMI frame only (ProtoID/EmiID/Mfg are in the 8-byte header)
+        const int emiLen = bodyLen;
+        if (emiLen <= 0 || hdrBase + 10 + emiLen > HID_REPORT_SIZE) {
+            qDebug().nospace() << "[UsbKnx] HID-Read: ungültige bodyLen=" << bodyLen;
+            return true;
+        }
 
-        if (dataLen <= 0 || n < dataOffset + dataLen) return true;
-        if (protoType == HID_PROTO_MGMT) return true;
+        if (protoId == HID_PID_BUS_ACCESS) {
+            // Management response — handled inline in hidMgmtRequest(), ignore here.
+            return true;
+        }
 
-        // Auto-update EMI type so sendHid() uses the correct format
-        if (protoType == HID_PROTO_EMI2 || protoType == HID_PROTO_CEMI)
-            hidEmiType = protoType;
+        // Auto-update EMI type so sendHid() uses the same format
+        if (emiId == HID_PROTO_EMI1 || emiId == HID_PROTO_EMI2 || emiId == HID_PROTO_CEMI)
+            hidEmiType = emiId;
 
-        const QByteArray frame(reinterpret_cast<const char *>(report + dataOffset), dataLen);
-        const QByteArray cemi = (protoType == HID_PROTO_EMI2) ? emi2ToCemi(frame) : frame;
+        // EMI frame starts at hdrBase+10 (after the 8-byte body header: PV+HL+BodyLen+ProtoID+EmiID+Mfg)
+        const QByteArray frame(reinterpret_cast<const char *>(report + hdrBase + 10), emiLen);
+        QByteArray cemi;
+        if      (emiId == HID_PROTO_EMI1) cemi = emi1ToCemi(frame);
+        else if (emiId == HID_PROTO_EMI2) cemi = emi2ToCemi(frame);
+        else                               cemi = frame;
+        qDebug().nospace() << "[UsbKnx] RX emi=" << static_cast<int>(emiId)
+                           << " raw=" << frame.toHex(' ').left(40)
+                           << " cemi=" << cemi.toHex(' ').left(40);
         if (!cemi.isEmpty())
             emit q->cemiFrameReceived(cemi);
         return true;
@@ -361,23 +512,13 @@ struct UsbKnxInterface::Priv
 #ifdef Q_OS_LINUX
         if (hidFd < 0) return;
 
-        const QByteArray payload = (hidEmiType == HID_PROTO_EMI2)
-                                   ? cemiToEmi2(cemi) : cemi;
-
-        uint8_t report[HID_REPORT_SIZE] = {};
-        // Use the same report format (numbered/unnumbered) as the device sends
-        const int infoOffset = hidNumberedReports ? 1 : 0;
-        if (hidNumberedReports)
-            report[0] = HID_REPORT_ID;
-        report[infoOffset]     = hidEmiType;
-        const int maxPayload   = HID_REPORT_SIZE - infoOffset - 2;
-        const int len          = std::min<int>(static_cast<int>(payload.size()), maxPayload);
-        report[infoOffset + 1] = static_cast<uint8_t>(len);
-        std::memcpy(report + infoOffset + 2, payload.constData(), static_cast<size_t>(len));
-        const ssize_t written = ::write(hidFd, report, HID_REPORT_SIZE);
-        if (written != HID_REPORT_SIZE)
-            qWarning().nospace() << "[UsbKnx] HID-Write unvollständig: wrote=" << written
-                                 << " expected=" << HID_REPORT_SIZE;
+        QByteArray payload;
+        if      (hidEmiType == HID_PROTO_EMI1) payload = cemiToEmi1(cemi);
+        else if (hidEmiType == HID_PROTO_EMI2) payload = cemiToEmi2(cemi);
+        else                                   payload = cemi;
+        qDebug().nospace() << "[UsbKnx] TX emi=" << static_cast<int>(hidEmiType)
+                           << " payload=" << payload.toHex(' ').left(60);
+        hidWriteReport(HID_PID_KNX_TUNNEL, hidEmiType, payload);
 #else
         Q_UNUSED(cemi)
 #endif

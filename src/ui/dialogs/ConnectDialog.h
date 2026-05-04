@@ -2,6 +2,7 @@
 
 #include "UsbKnxInterface.h"
 #include "KnxIpDiscovery.h"
+#include "KnxUsbMonitor.h"
 #include <QDialog>
 #include <QHostAddress>
 
@@ -25,7 +26,10 @@ class ConnectDialog : public QDialog
 public:
     enum class ConnectionType { KnxIp, Usb };
 
-    explicit ConnectDialog(QWidget *parent = nullptr);
+    // monitor may be nullptr; if provided the USB tab shows monitored devices
+    explicit ConnectDialog(KnxUsbMonitor *monitor, QWidget *parent = nullptr);
+    explicit ConnectDialog(QWidget *parent = nullptr)
+        : ConnectDialog(nullptr, parent) {}
 
     ConnectionType connectionType() const;
 
@@ -55,6 +59,8 @@ private:
     QLineEdit      *m_manualIp      = nullptr;
     QSpinBox       *m_manualPort    = nullptr;
     KnxIpDiscovery *m_discovery     = nullptr;
+
+    KnxUsbMonitor  *m_monitor        = nullptr;
 
     // USB tab
     QComboBox      *m_usbTransport  = nullptr;

@@ -10,9 +10,111 @@
 #include <QTimer>
 
 // Max bytes per A_Memory_Write frame (KNX spec minimum APDU, all TP devices must support 12 B).
-static constexpr int kChunkBytes = 12;
+static constexpr int kChunkBytes      = 12;
 // Wait after A_IndividualAddress_Write so device can process the new PA (KNX spec guidance).
 static constexpr int kPaWriteSettleMs = 400;
+// Maximum number of restart-poll attempts before giving up and advancing (BB3).
+static constexpr int kRestartMaxPolls = 5;
+
+// ─── Step sequences per mode ─────────────────────────────────────────────────
+
+QList<DeviceProgrammer::Step> DeviceProgrammer::stepSequence() const
+{
+    switch (m_mode) {
+    case Mode::Full:
+        return {
+            StepWaitProgMode,
+            StepWritePhysAddress,
+            StepCheckDescriptor,
+            StepConnect,
+            StepLoadStartAddrTable,
+            StepWriteAddressTable,
+            StepLoadEndAddrTable,
+            StepLoadStartAssocTable,
+            StepWriteAssociationTable,
+            StepLoadEndAssocTable,
+            StepLoadStartAppProgram,
+            StepWriteParameters,
+            StepLoadEndAppProgram,
+            StepVerifyParameters,
+            StepRestart,
+            StepWaitRestart,
+            StepDisconnect,
+            StepDone,
+        };
+    case Mode::ApplicationOnly:
+        return {
+            StepCheckDescriptor,
+            StepConnect,
+            StepLoadStartAddrTable,
+            StepWriteAddressTable,
+            StepLoadEndAddrTable,
+            StepLoadStartAssocTable,
+            StepWriteAssociationTable,
+            StepLoadEndAssocTable,
+            StepLoadStartAppProgram,
+            StepWriteParameters,
+            StepLoadEndAppProgram,
+            StepVerifyParameters,
+            StepRestart,
+            StepWaitRestart,
+            StepDisconnect,
+            StepDone,
+        };
+    case Mode::PhysicalAddressOnly:
+        return {
+            StepWaitProgMode,
+            StepWritePhysAddress,
+            StepDone,
+        };
+    case Mode::VerifyOnly:
+        return {
+            StepConnect,
+            StepVerifyParameters,
+            StepDisconnect,
+            StepDone,
+        };
+    }
+    return {};
+}
+
+// ─── Labels ──────────────────────────────────────────────────────────────────
+
+QString DeviceProgrammer::stepLabel(Step s)
+{
+    switch (s) {
+    case StepWaitProgMode:          return tr("Auf Programmiermodus warten");
+    case StepWritePhysAddress:      return tr("Physikalische Adresse schreiben");
+    case StepCheckDescriptor:       return tr("Gerätedeskriptor prüfen");
+    case StepConnect:               return tr("Verbindung aufbauen");
+    case StepLoadStartAddrTable:    return tr("Adresstabelle: Laden starten");
+    case StepWriteAddressTable:     return tr("Adresstabelle schreiben");
+    case StepLoadEndAddrTable:      return tr("Adresstabelle: Laden beenden");
+    case StepLoadStartAssocTable:   return tr("Assoziationstabelle: Laden starten");
+    case StepWriteAssociationTable: return tr("Assoziationstabelle schreiben");
+    case StepLoadEndAssocTable:     return tr("Assoziationstabelle: Laden beenden");
+    case StepLoadStartAppProgram:   return tr("Applikationsprogramm: Laden starten");
+    case StepWriteParameters:       return tr("Parameter schreiben");
+    case StepLoadEndAppProgram:     return tr("Applikationsprogramm: Laden beenden");
+    case StepVerifyParameters:      return tr("Parameter verifizieren");
+    case StepRestart:               return tr("Gerät neu starten");
+    case StepWaitRestart:           return tr("Gerät warten (Neustart)");
+    case StepDisconnect:            return tr("Verbindung trennen");
+    case StepDone:                  return tr("Fertig");
+    }
+    return {};
+}
+
+QString DeviceProgrammer::modeLabel(Mode m)
+{
+    switch (m) {
+    case Mode::Full:               return tr("Vollständig (PA + Anwendung)");
+    case Mode::ApplicationOnly:    return tr("Nur Anwendung (PA bleibt)");
+    case Mode::PhysicalAddressOnly:return tr("Nur Physikalische Adresse");
+    case Mode::VerifyOnly:         return tr("Nur Verifizieren (kein Schreiben)");
+    }
+    return {};
+}
 
 // ─── Constructor / Destructor ─────────────────────────────────────────────────
 
@@ -56,18 +158,20 @@ void DeviceProgrammer::start()
         emit finished(false, tr("Kein aktives KNX-Interface verbunden"));
         return;
     }
-    m_running           = true;
-    m_step              = StepWaitProgMode;
-    m_progResponseCount = 0;
-    m_verifyAwaiting    = false;
+
+    m_sequence            = stepSequence();
+    m_seqIdx              = 0;
+    m_running             = true;
+    m_progResponseCount   = 0;
+    m_verifyAwaiting      = false;
+    m_restartPollCount    = 0;
+    m_loadingObjects.clear();
     m_expectedParamBlock.clear();
 
-    // Keep global listener active for the entire programming session so the
-    // transport can receive frames (handleIncoming) at every step.
     connect(m_iface, &IKnxInterface::cemiFrameReceived,
             this, &DeviceProgrammer::onCemiReceivedGlobal);
 
-    emit stepStarted(StepWaitProgMode, stepLabel(StepWaitProgMode));
+    emit stepStarted(static_cast<int>(m_sequence.first()), stepLabel(m_sequence.first()));
     QMetaObject::invokeMethod(this, "runStep", Qt::QueuedConnection);
 }
 
@@ -89,40 +193,23 @@ void DeviceProgrammer::setTransportAckTimeoutMs(int ms)
     m_transport->setAckTimeoutMs(ms);
 }
 
-// ─── Step label ───────────────────────────────────────────────────────────────
+// ─── Internal: helpers ───────────────────────────────────────────────────────
 
-QString DeviceProgrammer::stepLabel(Step s)
+DeviceProgrammer::Step DeviceProgrammer::currentStep() const
 {
-    switch (s) {
-    case StepWaitProgMode:          return tr("Auf Programmiermodus warten");
-    case StepWritePhysAddress:      return tr("Physikalische Adresse schreiben");
-    case StepConnect:               return tr("Verbindung aufbauen");
-    case StepLoadStartAddrTable:    return tr("Adresstabelle: Laden starten");
-    case StepWriteAddressTable:     return tr("Adresstabelle schreiben");
-    case StepLoadEndAddrTable:      return tr("Adresstabelle: Laden beenden");
-    case StepLoadStartAssocTable:   return tr("Assoziationstabelle: Laden starten");
-    case StepWriteAssociationTable: return tr("Assoziationstabelle schreiben");
-    case StepLoadEndAssocTable:     return tr("Assoziationstabelle: Laden beenden");
-    case StepLoadStartAppProgram:   return tr("Applikationsprogramm: Laden starten");
-    case StepWriteParameters:       return tr("Parameter schreiben");
-    case StepLoadEndAppProgram:     return tr("Applikationsprogramm: Laden beenden");
-    case StepVerifyParameters:      return tr("Parameter verifizieren");
-    case StepRestart:               return tr("Gerät neu starten");
-    case StepDisconnect:            return tr("Verbindung trennen");
-    case StepDone:                  return tr("Fertig");
-    }
-    return {};
+    return m_sequence.value(m_seqIdx, StepDone);
 }
-
-// ─── Internal: advance / fail / runStep ──────────────────────────────────────
 
 void DeviceProgrammer::advance()
 {
-    emit stepCompleted(m_step);
-    ++m_step;
-    emit progressUpdated(m_step * 100 / static_cast<int>(StepDone));
-    if (m_step <= static_cast<int>(StepDone))
-        emit stepStarted(m_step, stepLabel(static_cast<Step>(m_step)));
+    emit stepCompleted(static_cast<int>(currentStep()));
+    ++m_seqIdx;
+    const int total = m_sequence.size();
+    emit progressUpdated(total > 1 ? (m_seqIdx * 100 / (total - 1)) : 100);
+    if (m_seqIdx < total) {
+        const Step next = m_sequence[m_seqIdx];
+        emit stepStarted(static_cast<int>(next), stepLabel(next));
+    }
     QMetaObject::invokeMethod(this, "runStep", Qt::QueuedConnection);
 }
 
@@ -131,6 +218,7 @@ void DeviceProgrammer::fail(const QString &msg)
     m_running = false;
     m_timer->stop();
     m_timer->disconnect();
+    m_loadingObjects.clear();
     disconnect(m_iface, &IKnxInterface::cemiFrameReceived,
                this, &DeviceProgrammer::onCemiReceivedGlobal);
     if (m_transport->isOpen())
@@ -141,35 +229,36 @@ void DeviceProgrammer::fail(const QString &msg)
 void DeviceProgrammer::runStep()
 {
     if (!m_running) return;
-    const auto s = static_cast<Step>(m_step);
-    switch (s) {
+    switch (currentStep()) {
     case StepWaitProgMode:          doStepWaitProgMode();    break;
     case StepWritePhysAddress:      doStepWritePhysAddress(); break;
+    case StepCheckDescriptor:       doStepCheckDescriptor(); break;
     case StepConnect:               doStepConnect();          break;
-    case StepLoadStartAddrTable:    doStepLoadStart(0, s);   break;
+    case StepLoadStartAddrTable:    doStepLoadStart(0);      break;
     case StepWriteAddressTable: {
         const auto img = TableBuilder::build(*m_device, *m_appProgram);
-        doStepWriteMemory(m_appProgram->memoryLayout.addressTable, img.addressTable, s);
+        doStepWriteMemory(m_appProgram->memoryLayout.addressTable, img.addressTable);
         break;
     }
-    case StepLoadEndAddrTable:      doStepLoadEnd(0, s);     break;
-    case StepLoadStartAssocTable:   doStepLoadStart(1, s);   break;
+    case StepLoadEndAddrTable:      doStepLoadEnd(0);        break;
+    case StepLoadStartAssocTable:   doStepLoadStart(1);      break;
     case StepWriteAssociationTable: {
         const auto img = TableBuilder::build(*m_device, *m_appProgram);
         doStepWriteMemory(m_appProgram->memoryLayout.associationTable,
-                          img.associationTable, s);
+                          img.associationTable);
         break;
     }
-    case StepLoadEndAssocTable:     doStepLoadEnd(1, s);     break;
-    case StepLoadStartAppProgram:   doStepLoadStart(2, s);   break;
+    case StepLoadEndAssocTable:     doStepLoadEnd(1);        break;
+    case StepLoadStartAppProgram:   doStepLoadStart(2);      break;
     case StepWriteParameters: {
         const auto img = TableBuilder::build(*m_device, *m_appProgram);
-        doStepWriteMemory(m_appProgram->memoryLayout.parameterBase, img.parameterBlock, s);
+        doStepWriteMemory(m_appProgram->memoryLayout.parameterBase, img.parameterBlock);
         break;
     }
-    case StepLoadEndAppProgram:     doStepLoadEnd(2, s);     break;
+    case StepLoadEndAppProgram:     doStepLoadEnd(2);        break;
     case StepVerifyParameters:      doStepVerify();           break;
     case StepRestart:               doStepRestart();          break;
+    case StepWaitRestart:           doStepWaitRestart();      break;
     case StepDisconnect:            doStepDisconnect();       break;
     case StepDone:                  doStepDone();             break;
     }
@@ -180,19 +269,15 @@ void DeviceProgrammer::runStep()
 void DeviceProgrammer::doStepWaitProgMode()
 {
     m_progResponseCount = 0;
-    // Ask all devices in programming mode to identify themselves
     m_iface->sendCemiFrame(CemiFrame::buildIndividualAddressRead());
 
-    // The global cemi listener (onCemiReceivedGlobal) counts responses.
-    // If timer fires before any response: no device → fail.
     m_timer->disconnect();
     connect(m_timer, &QTimer::timeout, this, [this]() {
         m_timer->disconnect();
         if (!m_running) return;
         if (m_progResponseCount == 0)
-            fail(tr("Kein Gerät im Programmiermodus gefunden. "
-                    "Bitte Programmiertaste am Gerät drücken."));
-        // else: already handled by onCemiReceivedGlobal
+            fail(tr("Kein Gerät im Programmiermodus gefunden.\n"
+                    "Bitte Programmiertaste am Gerät drücken und erneut versuchen."));
     });
     m_timer->start(m_progModeTimeoutMs);
 }
@@ -202,7 +287,6 @@ void DeviceProgrammer::doStepWritePhysAddress()
     const uint16_t pa = CemiFrame::physAddrFromString(m_device->physicalAddress());
     m_iface->sendCemiFrame(CemiFrame::buildIndividualAddressWrite(pa));
 
-    // Give the device time to store the new PA (KNX spec recommends ~300 ms).
     m_timer->disconnect();
     connect(m_timer, &QTimer::timeout, this, [this]() {
         m_timer->disconnect();
@@ -211,39 +295,58 @@ void DeviceProgrammer::doStepWritePhysAddress()
     m_timer->start(kPaWriteSettleMs);
 }
 
+void DeviceProgrammer::doStepCheckDescriptor()
+{
+    // Send unicast unconnected A_DeviceDescriptor_Read(0) to the target PA.
+    // The response tells us the BCU mask version so we can verify compatibility.
+    const uint16_t pa = CemiFrame::physAddrFromString(m_device->physicalAddress());
+    m_iface->sendCemiFrame(CemiFrame::buildDeviceDescriptorRead(pa));
+
+    m_timer->disconnect();
+    connect(m_timer, &QTimer::timeout, this, [this]() {
+        m_timer->disconnect();
+        if (!m_running) return;
+        // Device did not respond — it might not be reachable at this PA yet
+        // (e.g. after fresh PA write, some devices need a moment).
+        // Emit a warning and continue rather than aborting.
+        emit warningOccurred(
+            tr("Gerät %1 antwortete nicht auf Gerätedeskriptor-Anfrage.\n"
+               "Möglicherweise ist es noch nicht bereit – Programmierung wird fortgesetzt.")
+                .arg(m_device->physicalAddress()));
+        advance();
+    });
+    m_timer->start(m_descriptorCheckTimeoutMs);
+}
+
 void DeviceProgrammer::doStepConnect()
 {
     const uint16_t pa = CemiFrame::physAddrFromString(m_device->physicalAddress());
     m_transport->open(pa);
-    // TransportConnection::opened() fires synchronously → onTransportOpened → advance
 }
 
-void DeviceProgrammer::doStepLoadStart(uint8_t objIdx, Step /*ownStep*/)
+void DeviceProgrammer::doStepLoadStart(uint8_t objIdx)
 {
     if (!m_useLoadState) { advance(); return; }
+    m_loadingObjects.insert(objIdx);
     // PID 5 = LoadStateControl, value 1 = StartLoading
     m_transport->sendPropertyWrite(objIdx, 5, 1, 1, QByteArray(1, char(1)));
-    // onTransportIdle → advance
 }
 
-void DeviceProgrammer::doStepLoadEnd(uint8_t objIdx, Step /*ownStep*/)
+void DeviceProgrammer::doStepLoadEnd(uint8_t objIdx)
 {
     if (!m_useLoadState) { advance(); return; }
+    m_loadingObjects.remove(objIdx);
     // PID 5 = LoadStateControl, value 2 = LoadCompleted
     m_transport->sendPropertyWrite(objIdx, 5, 1, 1, QByteArray(1, char(2)));
-    // onTransportIdle → advance
 }
 
-void DeviceProgrammer::doStepWriteMemory(uint16_t baseAddr,
-                                          const QByteArray &block,
-                                          Step /*ownStep*/)
+void DeviceProgrammer::doStepWriteMemory(uint16_t baseAddr, const QByteArray &block)
 {
     if (block.isEmpty()) { advance(); return; }
     for (int off = 0; off < block.size(); off += kChunkBytes) {
-        const auto addr  = static_cast<uint16_t>(baseAddr + off);
+        const auto addr = static_cast<uint16_t>(baseAddr + off);
         m_transport->sendMemoryWrite(addr, block.mid(off, kChunkBytes));
     }
-    // onTransportIdle (after last ACK) → advance
 }
 
 void DeviceProgrammer::doStepVerify()
@@ -257,7 +360,6 @@ void DeviceProgrammer::doStepVerify()
 
     m_verifyAwaiting = true;
 
-    // 3-second timeout — treat as failure (device must respond to Memory_Read)
     m_timer->disconnect();
     connect(m_timer, &QTimer::timeout, this, [this]() {
         m_timer->disconnect();
@@ -276,7 +378,40 @@ void DeviceProgrammer::doStepVerify()
 void DeviceProgrammer::doStepRestart()
 {
     m_transport->sendRestart();
-    // onTransportIdle → advance; or onTransportClosed if device disconnects first
+    // Transport may close after restart (device sends T_Disconnect).
+    // Both onTransportIdle and onTransportClosed advance to StepWaitRestart.
+}
+
+void DeviceProgrammer::doStepWaitRestart()
+{
+    // Transport is already closed at this point.
+    // Wait a settle period, then poll with DeviceDescriptor_Read.
+    m_restartPollCount = 0;
+    const uint16_t pa  = CemiFrame::physAddrFromString(m_device->physicalAddress());
+
+    m_timer->disconnect();
+    connect(m_timer, &QTimer::timeout, this, [this, pa]() {
+        if (!m_running) return;
+        if (m_restartPollCount == 0) {
+            // Settle period elapsed — start polling
+            m_iface->sendCemiFrame(CemiFrame::buildDeviceDescriptorRead(pa));
+            ++m_restartPollCount;
+            m_timer->start(m_restartPollIntervalMs);
+        } else if (m_restartPollCount < kRestartMaxPolls) {
+            m_iface->sendCemiFrame(CemiFrame::buildDeviceDescriptorRead(pa));
+            ++m_restartPollCount;
+            m_timer->start(m_restartPollIntervalMs);
+        } else {
+            // Device took too long — advance anyway; restart likely happened
+            m_timer->disconnect();
+            emit warningOccurred(
+                tr("Gerät %1 meldete sich nach dem Neustart nicht zurück.\n"
+                   "Neustart wurde wahrscheinlich trotzdem durchgeführt.")
+                    .arg(m_device->physicalAddress()));
+            advance();
+        }
+    });
+    m_timer->start(m_restartSettleMs);  // initial settle
 }
 
 void DeviceProgrammer::doStepDisconnect()
@@ -285,7 +420,6 @@ void DeviceProgrammer::doStepDisconnect()
         m_transport->close();
         // onTransportClosed → advance
     } else {
-        // Transport already closed, e.g. device disconnected after restart
         advance();
     }
 }
@@ -305,31 +439,67 @@ void DeviceProgrammer::onCemiReceivedGlobal(const QByteArray &cemi)
 {
     if (!m_running) return;
 
-    // Forward every frame to the transport connection (handles T_ACK / T_Data_Connected).
     m_transport->handleIncoming(cemi);
 
-    // During prog-mode detection: count IndividualAddress_Response frames.
-    if (m_step != StepWaitProgMode) return;
-
     const CemiFrame f = CemiFrame::fromBytes(cemi);
-    if (!f.isIndividualAddressResponse()) return;
 
-    ++m_progResponseCount;
-    if (m_progResponseCount == 1) {
+    // ── StepWaitProgMode: count IndividualAddress_Response ────────────────────
+    if (currentStep() == StepWaitProgMode) {
+        if (!f.isIndividualAddressResponse()) return;
+        ++m_progResponseCount;
+        if (m_progResponseCount == 1) {
+            m_timer->stop();
+            m_timer->disconnect();
+            advance();
+        } else {
+            m_timer->stop();
+            m_timer->disconnect();
+            fail(tr("Mehrere Geräte im Programmiermodus erkannt – "
+                    "bitte nur ein Gerät gleichzeitig aktivieren."));
+        }
+        return;
+    }
+
+    // ── StepCheckDescriptor: verify mask version ──────────────────────────────
+    if (currentStep() == StepCheckDescriptor) {
+        if (!f.isDeviceDescriptorResponse()) return;
+        if (f.groupAddress) return;
+        const uint16_t pa = CemiFrame::physAddrFromString(m_device->physicalAddress());
+        if (f.sourceAddress != pa) return;
+
+        m_timer->stop();
+        m_timer->disconnect();
+
+        const uint16_t deviceMask = f.deviceDescriptorMaskVersion();
+        const uint16_t expectedMask = m_appProgram->maskVersion;
+        if (expectedMask != 0 && deviceMask != 0 && deviceMask != expectedMask) {
+            emit warningOccurred(
+                tr("Maskenversion-Konflikt: Gerät meldet 0x%1, "
+                   "Anwendungsprogramm erwartet 0x%2.\n"
+                   "Das Gerät könnte inkompatibel sein – Programmierung wird trotzdem versucht.")
+                    .arg(deviceMask, 4, 16, QLatin1Char('0'))
+                    .arg(expectedMask, 4, 16, QLatin1Char('0')));
+        }
+        advance();
+        return;
+    }
+
+    // ── StepWaitRestart: watch for device coming back online ──────────────────
+    if (currentStep() == StepWaitRestart) {
+        if (!f.isDeviceDescriptorResponse()) return;
+        if (f.groupAddress) return;
+        const uint16_t pa = CemiFrame::physAddrFromString(m_device->physicalAddress());
+        if (f.sourceAddress != pa) return;
+        // Device responded — it's back online
         m_timer->stop();
         m_timer->disconnect();
         advance();
-    } else {
-        m_timer->stop();
-        m_timer->disconnect();
-        fail(tr("Mehrere Geräte im Programmiermodus erkannt – "
-                "bitte nur ein Gerät aktivieren."));
     }
 }
 
 void DeviceProgrammer::onTransportOpened()
 {
-    if (!m_running || m_step != StepConnect) return;
+    if (!m_running || currentStep() != StepConnect) return;
     advance();
 }
 
@@ -337,8 +507,7 @@ void DeviceProgrammer::onTransportIdle()
 {
     if (!m_running) return;
 
-    // Fired when the transport queue drains after the current batch.
-    switch (static_cast<Step>(m_step)) {
+    switch (currentStep()) {
     case StepLoadStartAddrTable:
     case StepWriteAddressTable:
     case StepLoadEndAddrTable:
@@ -360,11 +529,22 @@ void DeviceProgrammer::onTransportClosed()
 {
     if (!m_running) return;
 
-    const auto s = static_cast<Step>(m_step);
-    if (s == StepDisconnect || s == StepRestart) {
+    const Step s = currentStep();
+    if (s == StepDisconnect) {
+        advance();
+    } else if (s == StepRestart) {
+        // Device disconnected after restart — expected; proceed to WaitRestart
         advance();
     } else {
-        fail(tr("KNX-Verbindung unerwartet getrennt (Schritt: %1)").arg(stepLabel(s)));
+        const QString context = stepLabel(s);
+        QString hint;
+        if (!m_loadingObjects.isEmpty()) {
+            hint = tr("\nHinweis: Der Ladevorgang war noch nicht abgeschlossen. "
+                      "Das Gerät könnte in einem inkonsistenten Zustand sein. "
+                      "Bitte Reset/Programmiertaste drücken und neu versuchen.");
+        }
+        fail(tr("KNX-Verbindung unerwartet getrennt (Schritt: %1).%2")
+                 .arg(context, hint));
     }
 }
 
@@ -372,36 +552,40 @@ void DeviceProgrammer::onTransportError(const QString &msg)
 {
     if (!m_running) return;
 
-    if (m_step == StepVerifyParameters) {
+    if (currentStep() == StepVerifyParameters) {
         m_verifyAwaiting = false;
         m_timer->stop();
         m_timer->disconnect();
         fail(tr("Parameter-Verifikation fehlgeschlagen: %1\n"
                 "Bitte Programmierung wiederholen.").arg(msg));
     } else {
-        fail(tr("Transportfehler: %1").arg(msg));
+        const QString hint = m_loadingObjects.isEmpty()
+            ? QString{}
+            : tr("\nHinweis: Ladevorgang war aktiv. Gerät ggf. in inkonsistentem Zustand. "
+                 "Reset/Programmiertaste drücken und erneut versuchen.");
+        fail(tr("Transportfehler: %1%2").arg(msg, hint));
     }
 }
 
 void DeviceProgrammer::onTransportApdu(const QByteArray &apdu)
 {
     if (!m_running) return;
-    if (m_step != StepVerifyParameters || !m_verifyAwaiting) return;
+    if (currentStep() != StepVerifyParameters || !m_verifyAwaiting) return;
 
     m_timer->stop();
     m_timer->disconnect();
     m_verifyAwaiting = false;
 
-    // After TransportConnection strips the TPCI byte, a Memory_Response looks like:
-    //   [0] = APCI[7:0] = 0x40 | count   (APCI = 0x240, bits[9:8] were in TPCI)
+    // Memory_Response APDU (after TPCI is stripped):
+    //   [0] = 0x40 | count   (APCI = 0x240, bits[9:8] in TPCI)
     //   [1] = addr_hi
     //   [2] = addr_lo
     //   [3..3+count-1] = data
     if (apdu.size() < 3) { advance(); return; }
     const uint8_t b0 = static_cast<uint8_t>(apdu[0]);
-    if ((b0 & 0xC0) != 0x40) { advance(); return; }   // not a memory response
+    if ((b0 & 0xC0) != 0x40) { advance(); return; }
 
-    const int      cnt  = b0 & 0x3F;
+    const int cnt = b0 & 0x3F;
     if (apdu.size() < 3 + cnt) { advance(); return; }
 
     const uint16_t addr = (static_cast<uint8_t>(apdu[1]) << 8)
@@ -414,9 +598,10 @@ void DeviceProgrammer::onTransportApdu(const QByteArray &apdu)
     if (data != expected) {
         fail(tr("Parameter-Verifikation fehlgeschlagen.\n"
                 "Erwartet: %1\n"
-                "Gelesen:  %2")
-             .arg(QString::fromLatin1(expected.toHex(' ').toUpper()))
-             .arg(QString::fromLatin1(data.toHex(' ').toUpper())));
+                "Gelesen:  %2\n"
+                "Bitte Programmierung wiederholen.")
+             .arg(QString::fromLatin1(expected.toHex(' ').toUpper()),
+                  QString::fromLatin1(data.toHex(' ').toUpper())));
         return;
     }
     advance();
