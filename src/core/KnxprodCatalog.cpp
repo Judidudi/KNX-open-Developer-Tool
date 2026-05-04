@@ -190,6 +190,8 @@ static std::shared_ptr<KnxApplicationProgram> parseApplicationXml(const QByteArr
         if (n == QLatin1String("ApplicationProgram")) {
             prog->id   = rd.attributes().value(QLatin1String("Id")).toString();
             prog->name = rd.attributes().value(QLatin1String("Name")).toString();
+            prog->maskVersion = rd.attributes().value(QLatin1String("MaskVersion"))
+                                    .toString().toUShort(nullptr, 16);
 
         } else if (n == QLatin1String("Manufacturer")) {
             prog->manufacturer = rd.attributes().value(QLatin1String("RefId")).toString();

@@ -76,12 +76,39 @@ public:
         emit cemiFrameReceived(resp.toBytes());
     }
 
+    // Simulate A_DeviceDescriptor_Response(0) from a device at physAddr.
+    // Used to satisfy StepCheckDescriptor and StepWaitRestart.
+    void injectDeviceDescriptorResponse(const QString &physAddr, uint16_t maskVersion = 0x07B0)
+    {
+        CemiFrame resp;
+        resp.messageCode   = CemiFrame::MessageCode::LDataInd;
+        resp.sourceAddress = CemiFrame::physAddrFromString(physAddr);
+        resp.destAddress   = 0x0000;
+        resp.groupAddress  = false;
+        // Unconnected: TPCI=0, APCI[9:8]=11 → apdu[0]=0x03
+        // DevDesc_Response(0): APCI=0x340 → apdu[1]=0x40
+        // apdu[2..3] = maskVersion
+        resp.apdu.append(char(0x03));
+        resp.apdu.append(char(0x40));
+        resp.apdu.append(static_cast<char>(maskVersion >> 8));
+        resp.apdu.append(static_cast<char>(maskVersion & 0xFF));
+        emit cemiFrameReceived(resp.toBytes());
+    }
+
     bool               m_autoAck   = true;
     bool               m_connected = true;
     QList<QByteArray>  m_sent;
 };
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
+
+// Configures the programmer with short timeouts suitable for unit tests.
+static void setTestTimeouts(DeviceProgrammer &prog)
+{
+    prog.setDescriptorCheckTimeoutMs(30);  // warn and continue after 30 ms
+    prog.setRestartSettleMs(30);           // settle 30 ms
+    prog.setRestartPollIntervalMs(30);     // poll every 30 ms
+}
 
 static KnxApplicationProgram makeApp()
 {
@@ -219,22 +246,29 @@ private slots:
 
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
+        setTestTimeouts(prog);
 
-        // Inject a correct memory response when verify begins
+        // Inject correct responses for descriptor check, verify, and restart poll
         connect(&prog, &DeviceProgrammer::stepStarted,
                 [&](int step, const QString &) {
-            if (step == DeviceProgrammer::StepVerifyParameters) {
-                // Correct param data: p1=42 (0x2A), padded to 2 bytes
+            if (step == DeviceProgrammer::StepCheckDescriptor) {
+                QTimer::singleShot(5, [&]() {
+                    iface.injectDeviceDescriptorResponse(QStringLiteral("1.1.1"));
+                });
+            } else if (step == DeviceProgrammer::StepVerifyParameters) {
                 QTimer::singleShot(20, [&]() {
                     iface.injectMemoryResponse(QStringLiteral("1.1.1"), 0x4000,
                                                QByteArray::fromHex("2A00"));
+                });
+            } else if (step == DeviceProgrammer::StepWaitRestart) {
+                QTimer::singleShot(50, [&]() {
+                    iface.injectDeviceDescriptorResponse(QStringLiteral("1.1.1"));
                 });
             }
         });
 
         QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
 
-        // Simulate one prog-mode device as the first cemi response
         QTimer::singleShot(5, [&]() {
             iface.injectProgModeResponse(QStringLiteral("1.1.1"));
         });
@@ -265,12 +299,14 @@ private slots:
 
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
+        setTestTimeouts(prog);
 
         connect(&prog, &DeviceProgrammer::stepStarted,
                 [&](int step, const QString &) {
-            if (step == DeviceProgrammer::StepVerifyParameters) {
+            if (step == DeviceProgrammer::StepCheckDescriptor)
+                QTimer::singleShot(5, [&](){ iface.injectDeviceDescriptorResponse(QStringLiteral("1.1.1")); });
+            else if (step == DeviceProgrammer::StepVerifyParameters) {
                 QTimer::singleShot(20, [&]() {
-                    // Wrong data: 0xFF instead of 0x2A
                     iface.injectMemoryResponse(QStringLiteral("1.1.1"), 0x4000,
                                                QByteArray::fromHex("FF00"));
                 });
@@ -298,6 +334,12 @@ private slots:
 
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
+        setTestTimeouts(prog);
+
+        connect(&prog, &DeviceProgrammer::stepStarted, [&](int step, const QString &) {
+            if (step == DeviceProgrammer::StepCheckDescriptor)
+                QTimer::singleShot(5, [&](){ iface.injectDeviceDescriptorResponse(QStringLiteral("1.1.1")); });
+        });
 
         QTimer::singleShot(5, [&]() {
             iface.injectProgModeResponse(QStringLiteral("1.1.1"));
@@ -305,7 +347,7 @@ private slots:
 
         QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
         prog.start();
-        // ~10ms prog + 400ms PA settle + ~0ms transport steps + 3000ms verify timeout ≈ 3.5s
+        // 10ms prog + 400ms PA settle + 30ms descriptor + ~0ms transport + 3000ms verify timeout
         QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 10000);
 
         QCOMPARE(doneSpy.at(0).at(0).toBool(), false);
@@ -351,7 +393,15 @@ private slots:
         MockInterface iface;
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
-        prog.setVerifyEnabled(false);   // test is about chunking, not verify
+        prog.setVerifyEnabled(false);
+        setTestTimeouts(prog);
+
+        connect(&prog, &DeviceProgrammer::stepStarted, [&](int step, const QString &) {
+            if (step == DeviceProgrammer::StepCheckDescriptor)
+                QTimer::singleShot(5, [&](){ iface.injectDeviceDescriptorResponse(QStringLiteral("1.1.1")); });
+            else if (step == DeviceProgrammer::StepWaitRestart)
+                QTimer::singleShot(10, [&](){ iface.injectDeviceDescriptorResponse(QStringLiteral("1.1.1")); });
+        });
 
         QTimer::singleShot(5, [&]() {
             iface.injectProgModeResponse(QStringLiteral("1.1.1"));
@@ -359,7 +409,6 @@ private slots:
 
         QSignalSpy doneSpy(&prog, &DeviceProgrammer::finished);
         prog.start();
-        // 3 param chunks + addr/assoc tables → done without verify
         QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > 0, 8000);
 
         QCOMPARE(doneSpy.at(0).at(0).toBool(), true);
@@ -387,7 +436,15 @@ private slots:
         DeviceProgrammer prog(&iface, &dev, &app);
         prog.setProgModeTimeout(10);
         prog.setLoadStateMachineEnabled(false);
-        prog.setVerifyEnabled(false);   // test is about load-state, not verify
+        prog.setVerifyEnabled(false);
+        setTestTimeouts(prog);
+
+        connect(&prog, &DeviceProgrammer::stepStarted, [&](int step, const QString &) {
+            if (step == DeviceProgrammer::StepCheckDescriptor)
+                QTimer::singleShot(5, [&](){ iface.injectDeviceDescriptorResponse(QStringLiteral("1.1.1")); });
+            else if (step == DeviceProgrammer::StepWaitRestart)
+                QTimer::singleShot(10, [&](){ iface.injectDeviceDescriptorResponse(QStringLiteral("1.1.1")); });
+        });
 
         QTimer::singleShot(5, [&]() {
             iface.injectProgModeResponse(QStringLiteral("1.1.1"));

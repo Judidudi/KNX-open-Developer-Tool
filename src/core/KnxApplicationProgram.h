@@ -93,6 +93,7 @@ public:
     QString id;           // e.g. "M-00FA_A-1234-0001"
     QString name;
     QString manufacturer;
+    uint16_t maskVersion = 0; // BCU mask version from MaskVersion= attribute, e.g. 0x07B0
 
     QMap<QString, KnxParameterType> paramTypes;
     QList<KnxParameter>             parameters;
