@@ -3,7 +3,7 @@
 Open-source alternative to the KNX-certified ETS (Engineering Tool Software).  
 Configure, parametrize and program your self-built KNX-compatible devices — without vendor lock-in.
 
-**License:** GPLv3 | **Platform:** Linux (Windows/macOS portability planned) | **UI:** Qt6/C++
+**License:** GPLv3 | **Platform:** Linux | **UI:** Qt6/C++
 
 ---
 
