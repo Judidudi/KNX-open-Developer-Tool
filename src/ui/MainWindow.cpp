@@ -30,6 +30,7 @@
 #include "ConnectInterfaceFactory.h"
 #include "UsbKnxInterface.h"
 #include "KnxUsbMonitor.h"
+#include "KnxdManager.h"
 
 #include <QMenuBar>
 #include <QToolBar>
@@ -133,6 +134,18 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_usbMonitor, &KnxUsbMonitor::deviceRemoved,
             this, &MainWindow::onUsbDeviceRemoved);
     m_usbMonitor->start();
+
+    // knxd backend (when installed, preferred over direct USB HID)
+    if (KnxdManager::isInstalled()) {
+        m_knxdManager = new KnxdManager(this);
+        connect(m_knxdManager, &KnxdManager::ready,
+                this, &MainWindow::onKnxdReady);
+        connect(m_knxdManager, &KnxdManager::stopped,
+                this, &MainWindow::onKnxdStopped);
+        connect(m_knxdManager, &KnxdManager::errorOccurred,
+                this, &MainWindow::onInterfaceError);
+        qDebug() << "[MainWindow] knxd gefunden:" << KnxdManager::binaryPath();
+    }
 
     updateConnectionUi();
     updateWindowTitle();
@@ -656,6 +669,8 @@ void MainWindow::onConnectClicked()
 
 void MainWindow::onDisconnectClicked()
 {
+    if (m_knxdManager && m_knxdManager->isRunning())
+        m_knxdManager->stop();
     if (m_interfaces->activeInterface())
         m_interfaces->activeInterface()->disconnectFromInterface();
 }
@@ -680,18 +695,23 @@ void MainWindow::onUsbDeviceFound(KnxUsbMonitor::DeviceInfo info)
         return;
     }
 
-    m_connectionStatusLabel->setText(
-        tr("KNX: %1").arg(info.name));
+    m_autoConnectedName = info.name;
+    m_connectionStatusLabel->setText(tr("KNX: %1").arg(info.name));
 
     if (!m_interfaces->isConnected()) {
         m_autoConnectedPath = info.path;
-        auto iface = ConnectInterfaceFactory::createUsb(
-            UsbKnxInterface::Transport::HID, info.path);
-        m_interfaces->setInterface(std::move(iface));
-        if (m_interfaces->activeInterface())
-            m_interfaces->activeInterface()->connectToInterface();
-        statusBar()->showMessage(
-            tr("KNX-Interface automatisch verbunden: %1").arg(info.name));
+        if (m_knxdManager) {
+            statusBar()->showMessage(tr("Starte knxd für %1 …").arg(info.name));
+            m_knxdManager->start(info.path);   // → onKnxdReady() after ~2 s
+        } else {
+            auto iface = ConnectInterfaceFactory::createUsb(
+                UsbKnxInterface::Transport::HID, info.path);
+            m_interfaces->setInterface(std::move(iface));
+            if (m_interfaces->activeInterface())
+                m_interfaces->activeInterface()->connectToInterface();
+            statusBar()->showMessage(
+                tr("KNX-Interface automatisch verbunden: %1").arg(info.name));
+        }
     }
 }
 
@@ -699,11 +719,31 @@ void MainWindow::onUsbDeviceRemoved(QString path)
 {
     if (path == m_autoConnectedPath) {
         m_autoConnectedPath.clear();
-        if (m_interfaces->isConnected())
+        m_autoConnectedName.clear();
+        if (m_knxdManager && m_knxdManager->isRunning())
+            m_knxdManager->stop();   // → onKnxdStopped() → disconnects
+        else if (m_interfaces->isConnected())
             onDisconnectClicked();
         statusBar()->showMessage(tr("KNX-Interface getrennt."));
         m_connectionStatusLabel->setText(tr("Nicht verbunden"));
     }
+}
+
+void MainWindow::onKnxdReady()
+{
+    auto iface = ConnectInterfaceFactory::createViaKnxd(m_knxdManager);
+    m_interfaces->setInterface(std::move(iface));
+    if (m_interfaces->activeInterface())
+        m_interfaces->activeInterface()->connectToInterface();
+    statusBar()->showMessage(tr("● Verbunden via knxd (%1)").arg(m_autoConnectedName));
+}
+
+void MainWindow::onKnxdStopped()
+{
+    if (m_interfaces->isConnected())
+        m_interfaces->activeInterface()->disconnectFromInterface();
+    statusBar()->showMessage(tr("knxd beendet – Verbindung getrennt."), 5000);
+    updateConnectionUi();
 }
 
 void MainWindow::onShowBusMonitor()

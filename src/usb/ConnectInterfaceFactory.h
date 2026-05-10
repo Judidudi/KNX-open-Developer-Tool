@@ -4,6 +4,7 @@
 #include <memory>
 
 class IKnxInterface;
+class KnxdManager;
 class QHostAddress;
 
 class ConnectInterfaceFactory
@@ -18,4 +19,8 @@ public:
     // devicePath: system path such as /dev/ttyACM0 or /dev/hidraw0
     static std::unique_ptr<IKnxInterface> createUsb(UsbKnxInterface::Transport transport,
                                                      const QString &devicePath);
+
+    // Creates a KNXnet/IP tunneling client pointed at a running knxd instance.
+    // mgr must already be started (ready() emitted) before calling this.
+    static std::unique_ptr<IKnxInterface> createViaKnxd(KnxdManager *mgr);
 };

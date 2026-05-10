@@ -2,6 +2,7 @@
 #include "KnxIpDiscovery.h"
 #include "UsbKnxInterface.h"
 #include "KnxUsbMonitor.h"
+#include "KnxdManager.h"
 
 #include <QVBoxLayout>
 #include <QFormLayout>
@@ -86,11 +87,19 @@ static QWidget *buildUsbTab(ConnectDialog *dlg,
 
     layout->addLayout(form);
 
+    const QString knxdStatus = KnxdManager::isInstalled()
+        ? ConnectDialog::tr("<b style='color:#4CAF50;'>&#9679; knxd erkannt</b> (%1)"
+                            " – wird automatisch als Transport-Backend gestartet.")
+              .arg(KnxdManager::binaryPath())
+        : ConnectDialog::tr("<b style='color:#FF9800;'>&#9651; knxd nicht installiert</b>"
+                            " – direktes USB-HID wird verwendet. "
+                            "(<tt>sudo apt install knxd</tt> empfohlen)");
     hintLabel = new QLabel(
         ConnectDialog::tr(
+            "%1<br><br>"
             "<i>Seriell:</i> Das Interface benötigt Lese-/Schreibzugriff auf den Port.<br>"
             "Auf Linux: <tt>sudo usermod -aG dialout $USER</tt> und neu anmelden.<br>"
-            "<i>HID:</i> udev-Regel für das KNX-Gerät notwendig (Vendor-/Product-ID)."),
+            "<i>HID:</i> udev-Regel für das KNX-Gerät notwendig (Vendor-/Product-ID).").arg(knxdStatus),
         tab);
     hintLabel->setWordWrap(true);
     hintLabel->setTextFormat(Qt::RichText);
