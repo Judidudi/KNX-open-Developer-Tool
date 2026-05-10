@@ -127,15 +127,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_interfaces.get(), &InterfaceManager::errorOccurred,
             this, &MainWindow::onInterfaceError);
 
-    // USB auto-discovery monitor
-    m_usbMonitor = new KnxUsbMonitor(this);
-    connect(m_usbMonitor, &KnxUsbMonitor::deviceFound,
-            this, &MainWindow::onUsbDeviceFound);
-    connect(m_usbMonitor, &KnxUsbMonitor::deviceRemoved,
-            this, &MainWindow::onUsbDeviceRemoved);
-    m_usbMonitor->start();
-
-    // knxd backend (when installed, preferred over direct USB HID)
+    // knxd backend — must be initialized BEFORE the USB monitor starts,
+    // because KnxUsbMonitor::start() calls poll() synchronously and may
+    // immediately emit deviceFound before we reach the knxd block below.
     if (KnxdManager::isInstalled()) {
         m_knxdManager = new KnxdManager(this);
         connect(m_knxdManager, &KnxdManager::ready,
@@ -146,6 +140,14 @@ MainWindow::MainWindow(QWidget *parent)
                 this, &MainWindow::onInterfaceError);
         qDebug() << "[MainWindow] knxd gefunden:" << KnxdManager::binaryPath();
     }
+
+    // USB auto-discovery monitor (start AFTER knxd is ready — see above)
+    m_usbMonitor = new KnxUsbMonitor(this);
+    connect(m_usbMonitor, &KnxUsbMonitor::deviceFound,
+            this, &MainWindow::onUsbDeviceFound);
+    connect(m_usbMonitor, &KnxUsbMonitor::deviceRemoved,
+            this, &MainWindow::onUsbDeviceRemoved);
+    m_usbMonitor->start();
 
     updateConnectionUi();
     updateWindowTitle();
