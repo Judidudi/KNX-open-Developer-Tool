@@ -6,6 +6,8 @@
 #include <QHash>
 #include <memory>
 
+class KnxdManager;
+
 class Project;
 class KnxprodCatalog;
 class KnxApplicationProgram;
@@ -85,6 +87,10 @@ private slots:
     void onUsbDeviceFound(KnxUsbMonitor::DeviceInfo info);
     void onUsbDeviceRemoved(QString path);
 
+    // AC: knxd backend
+    void onKnxdReady();
+    void onKnxdStopped();
+
 private slots:
     void startCatalogLoad();
 
@@ -108,8 +114,10 @@ private:
     std::unique_ptr<InterfaceManager> m_interfaces;
 
     KnxUsbMonitor *m_usbMonitor       = nullptr;
+    KnxdManager   *m_knxdManager     = nullptr;  // nullptr when knxd not installed
     bool           m_udevPromptShown  = false;
     QString        m_autoConnectedPath;
+    QString        m_autoConnectedName;
 
     ProjectTreeWidget  *m_projectTree     = nullptr;
     BusMonitorWidget   *m_busMonitor      = nullptr;

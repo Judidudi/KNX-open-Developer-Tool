@@ -362,17 +362,32 @@ struct UsbKnxInterface::Priv
         return false;
     }
 
-    // BCU activation for EMI1 interfaces (from KNX USB spec / knxd reference implementation).
-    // Sends PC_Set_Value.req to put the bus coupling unit into receive/normal mode.
+    // BCU activation for EMI1 interfaces.
+    // Sends the two-command init sequence from knxd EMI1Driver::cmdOpen() +
+    // cmdEnterMonitor().  Without cmdEnterMonitor the interface stays closed
+    // and does NOT forward any received KNX bus frames to the host.
     void activateBcuEmi1()
     {
-        static const uint8_t kBcuActivate[] = {
-            0x46,0x01,0x01,0x16,0x00,0xFF,0x00,0x00,0x00,0x11,0x52,0xD0,0x65,0xD9,0xC1,0xAA
-        };
+        // Step 1 – cmdOpen: clear address table (knxd: EMI1Driver::cmdOpen)
+        static const uint8_t kCmdOpen[] = { 0x46, 0x01, 0x01, 0x16, 0x00 };
         hidWriteReport(HID_PID_KNX_TUNNEL, HID_PROTO_EMI1,
-                       QByteArray(reinterpret_cast<const char *>(kBcuActivate),
-                                  static_cast<int>(sizeof(kBcuActivate))));
-        qDebug() << "[UsbKnx] BCU-Aktivierung (EMI1 PC_Set_Value.req) gesendet";
+                       QByteArray(reinterpret_cast<const char *>(kCmdOpen), sizeof(kCmdOpen)));
+        qDebug() << "[UsbKnx] EMI1 cmdOpen (0x46 0x01 0x01 0x16 0x00) gesendet";
+
+        // Drain ack (0x47-prefixed response) before sending next command
+        uint8_t ack[HID_REPORT_SIZE] = {};
+        hidPollRead(ack, 300);
+
+        // Step 2 – cmdEnterMonitor: put interface into receive mode so it forwards
+        // all incoming KNX bus frames to the host (knxd: EMI1Driver::cmdEnterMonitor)
+        static const uint8_t kCmdEnterMonitor[] = { 0x46, 0x01, 0x00, 0x60, 0x90 };
+        hidWriteReport(HID_PID_KNX_TUNNEL, HID_PROTO_EMI1,
+                       QByteArray(reinterpret_cast<const char *>(kCmdEnterMonitor),
+                                  sizeof(kCmdEnterMonitor)));
+        qDebug() << "[UsbKnx] EMI1 cmdEnterMonitor (0x46 0x01 0x00 0x60 0x90) gesendet";
+
+        // Drain final ack
+        hidPollRead(ack, 300);
     }
 
     bool negotiateHidProtocol()
