@@ -2,6 +2,9 @@
 
 #include <QProcess>
 #include <QStandardPaths>
+#include <QTemporaryFile>
+#include <QTextStream>
+#include <QDir>
 #include <QTimer>
 #include <QFile>
 #include <QDebug>
@@ -38,6 +41,8 @@ KnxdManager::~KnxdManager()
 
 bool KnxdManager::start(const QString &usbDevPath)
 {
+    Q_UNUSED(usbDevPath)
+
     if (m_process && m_process->state() != QProcess::NotRunning) {
         qWarning() << "[KnxdMgr] already running";
         return false;
@@ -49,13 +54,46 @@ bool KnxdManager::start(const QString &usbDevPath)
         return false;
     }
 
+    // knxd 0.14.x requires an INI config file — CLI flags produce
+    // "Only one connection in section 'main'" and exit with code 2.
+    if (!m_configPath.isEmpty())
+        QFile::remove(m_configPath);
+
+    QTemporaryFile tmpCfg(QDir::tempPath() + QLatin1String("/knxd-XXXXXX.ini"));
+    tmpCfg.setAutoRemove(false);  // we manage lifetime via m_configPath
+    if (!tmpCfg.open()) {
+        emit errorOccurred(tr("Konnte knxd-Konfiguration nicht schreiben."));
+        return false;
+    }
+    {
+        QTextStream s(&tmpCfg);
+        s << "[main]\n"
+          << "addr = 1.0.255\n"
+          << "client-addrs = 1.0.1:8\n"
+          << "connections = server,A.usb\n"
+          << "\n[server]\n"
+          << "server = ets_router\n"
+          << "discover = true\n"
+          << "tunnel = tunnel\n"
+          << "\n[A.usb]\n"
+          << "driver = usb\n"
+          << "\n[tunnel]\n";
+    }
+    tmpCfg.close();
+    m_configPath = tmpCfg.fileName();
+
     if (!m_process) {
         m_process = new QProcess(this);
         connect(m_process, &QProcess::readyReadStandardError, this, [this]() {
             const QString line =
                 QString::fromLocal8Bit(m_process->readAllStandardError()).trimmed();
-            if (!line.isEmpty())
+            if (!line.isEmpty()) {
                 qDebug().nospace() << "[knxd] " << line;
+                if (line.contains(QLatin1String("write access")) ||
+                    line.contains(QLatin1String("errno=13"))) {
+                    emit udevSetupNeeded();
+                }
+            }
         });
         connect(m_process, &QProcess::readyReadStandardOutput, this, [this]() {
             const QString line =
@@ -68,21 +106,9 @@ bool KnxdManager::start(const QString &usbDevPath)
                 this, &KnxdManager::onProcessFinished);
     }
 
-    // -e  = gateway individual address
-    // -E  = pool of 8 tunneling-client individual addresses
-    // -T  = enable KNXnet/IP Tunnelling server on UDP port 3671
-    // -S  = enable knxd server (EIBd compat)
-    const QStringList args = {
-        QStringLiteral("-e"), QStringLiteral("1.0.255"),
-        QStringLiteral("-E"), QStringLiteral("1.0.1:8"),
-        QStringLiteral("-T"),
-        QStringLiteral("-S"),
-        QStringLiteral("usb:") + usbDevPath,
-    };
-    qDebug().nospace() << "[KnxdMgr] starting: " << bin
-                       << QLatin1Char(' ') << args.join(QLatin1Char(' '));
+    qDebug().nospace() << "[KnxdMgr] starting: " << bin << " " << m_configPath;
 
-    m_process->start(bin, args);
+    m_process->start(bin, QStringList{ m_configPath });
     if (!m_process->waitForStarted(3000)) {
         emit errorOccurred(tr("knxd konnte nicht gestartet werden: %1")
                                .arg(m_process->errorString()));
@@ -102,6 +128,10 @@ bool KnxdManager::start(const QString &usbDevPath)
 
 void KnxdManager::stop()
 {
+    if (!m_configPath.isEmpty()) {
+        QFile::remove(m_configPath);
+        m_configPath.clear();
+    }
     if (!m_process || m_process->state() == QProcess::NotRunning)
         return;
     qDebug() << "[KnxdMgr] stopping";

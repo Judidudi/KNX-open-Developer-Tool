@@ -37,10 +37,12 @@ signals:
     void ready();                       // knxd is up, connect your client
     void stopped();                     // process exited (intentional or crash)
     void errorOccurred(const QString &msg);
+    void udevSetupNeeded();             // libusb permission denied — install udev rule
 
 private:
     void onProcessFinished(int exitCode, QProcess::ExitStatus status);
 
-    QProcess *m_process = nullptr;
-    quint16   m_port    = 3671;
+    QProcess *m_process    = nullptr;
+    QString   m_configPath;             // temp INI config file path
+    quint16   m_port       = 3671;
 };

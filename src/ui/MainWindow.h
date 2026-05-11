@@ -90,6 +90,7 @@ private slots:
     // AC: knxd backend
     void onKnxdReady();
     void onKnxdStopped();
+    void onKnxdUdevNeeded();
 
 private slots:
     void startCatalogLoad();
